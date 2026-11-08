@@ -1,0 +1,19 @@
+[package]
+name = "wintool"
+version = "0.1.0"
+edition = "2021"
+description = "Windows 7/10/11 ucun sebeke temiri, sistem temizliyi ve sistem temiri"
+license = "CC-BY-NC-SA-4.0"
+repository = "https://github.com/Really-y/wintool"
+
+[dependencies]
+
+[build-dependencies]
+embed-manifest = "1.4"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
