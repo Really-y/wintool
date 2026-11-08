@@ -1,12 +1,12 @@
-//! Sistem təmizliyi: temp, Windows Update cache, xəta hesabatları, thumbnail cache, zibil qutusu.
+//! System cleanup: temp files, Windows Update cache, error reports, thumbnail cache, recycle bin.
 
 use crate::util::*;
 use std::path::PathBuf;
 
 enum Kind {
-    /// Qovluğun bütün içi.
+    /// Everything inside the folder.
     Dir,
-    /// Qovluqda prefix/suffix-ə uyğun fayllar.
+    /// Files in the folder matching prefix/suffix.
     Matching(&'static str, &'static str),
 }
 
@@ -14,7 +14,7 @@ struct Target {
     name: &'static str,
     path: PathBuf,
     kind: Kind,
-    /// Təmizlikdən əvvəl dayandırılmalı servislər.
+    /// Services that must be stopped while cleaning.
     services: &'static [&'static str],
 }
 
@@ -24,22 +24,22 @@ fn targets() -> Vec<Target> {
     let progdata = env_path("ProgramData", r"C:\ProgramData");
     let sysdrive = env_path("SystemDrive", "C:");
     vec![
-        Target { name: "Istifadeci Temp", path: env_path("TEMP", r"C:\Windows\Temp"), kind: Kind::Dir, services: &[] },
+        Target { name: "User Temp", path: env_path("TEMP", r"C:\Windows\Temp"), kind: Kind::Dir, services: &[] },
         Target { name: "Windows Temp", path: win.join("Temp"), kind: Kind::Dir, services: &[] },
         Target {
-            name: "Windows Update yuklemeleri",
+            name: "Windows Update downloads",
             path: win.join(r"SoftwareDistribution\Download"),
             kind: Kind::Dir,
             services: &["wuauserv", "bits"],
         },
         Target {
-            name: "Xeta hesabatlari (WER)",
+            name: "Error reports (WER archive)",
             path: progdata.join(r"Microsoft\Windows\WER\ReportArchive"),
             kind: Kind::Dir,
             services: &[],
         },
         Target {
-            name: "Xeta hesabatlari novbesi",
+            name: "Error reports (WER queue)",
             path: progdata.join(r"Microsoft\Windows\WER\ReportQueue"),
             kind: Kind::Dir,
             services: &[],
@@ -51,7 +51,7 @@ fn targets() -> Vec<Target> {
             services: &[],
         },
         Target {
-            name: "Zibil qutusu (butun istifadeciler)",
+            name: "Recycle Bin (all users)",
             path: PathBuf::from(format!(r"{}\$Recycle.Bin", sysdrive.display())),
             kind: Kind::Dir,
             services: &[],
@@ -61,16 +61,16 @@ fn targets() -> Vec<Target> {
 
 pub fn menu() {
     loop {
-        header("Sistem temizliyi");
-        println!(" 1. Tez temizlik (temp, update cache, zibil qutusu ...)");
-        println!(" 2. Windows komponent temizliyi (WinSxS - kohne update-ler)");
-        println!(" 3. Windows Disk Cleanup (cleanmgr) ac");
-        println!(" 0. Geri");
-        match prompt("\nSecim: ").as_str() {
+        header("System cleanup");
+        println!(" 1. Quick cleanup (temp, update cache, recycle bin ...)");
+        println!(" 2. Windows component cleanup (WinSxS - old updates)");
+        println!(" 3. Open Windows Disk Cleanup (cleanmgr)");
+        println!(" 0. Back");
+        match prompt("\nChoice: ").as_str() {
             "1" => quick_clean(),
             "2" => component_cleanup(),
             "3" => {
-                run("Disk Cleanup acilir", "cleanmgr", &[]);
+                run("Opening Disk Cleanup", "cleanmgr", &[]);
             }
             "0" => return,
             _ => continue,
@@ -98,20 +98,20 @@ fn size_of(t: &Target) -> u64 {
 
 fn quick_clean() {
     let ts = targets();
-    println!("\nSkan edilir...\n");
+    println!("\nScanning...\n");
     let sizes: Vec<u64> = ts.iter().map(size_of).collect();
     for (t, s) in ts.iter().zip(&sizes) {
         println!("  {:<38} {:>10}", t.name, human(*s));
     }
     let total: u64 = sizes.iter().sum();
     println!("  {:-<49}", "");
-    println!("  {:<38} {:>10}", "CEMI", human(total));
+    println!("  {:<38} {:>10}", "TOTAL", human(total));
 
     if total == 0 {
-        println!("\nTemizlenecek bir sey yoxdur.");
+        println!("\nNothing to clean.");
         return;
     }
-    if !confirm("\nHamisi silinsin?") {
+    if !confirm("\nDelete all of it?") {
         return;
     }
 
@@ -128,29 +128,25 @@ fn quick_clean() {
         for s in t.services {
             cmd_quiet(&format!("net start {s}"));
         }
-        println!("  {:<38} {:>10} bosaldi", t.name, human(f));
+        println!("  {:<38} {:>10} freed", t.name, human(f));
         freed += f;
         skipped += k;
     }
-    println!("\nCemi bosaldi: {}", human(freed));
+    println!("\nTotal freed: {}", human(freed));
     if skipped > 0 {
-        println!("({skipped} element istifadede oldugu ucun otuldu - bu normaldir.)");
+        println!("({skipped} item(s) skipped because they are in use - this is normal.)");
     }
 }
 
 fn component_cleanup() {
     if is_win7_or_older() {
-        println!("\nWindows 7-de bu Disk Cleanup vasitesile edilir:");
-        println!("acilan pencerede 'Clean up system files' -> 'Windows Update Cleanup' sec.");
-        run("Disk Cleanup acilir", "cleanmgr", &[]);
+        println!("\nOn Windows 7 this is done with Disk Cleanup:");
+        println!("in the window click 'Clean up system files' -> tick 'Windows Update Cleanup'.");
+        run("Opening Disk Cleanup", "cleanmgr", &[]);
         return;
     }
-    println!("\nKohne update fayllari silinir (5-20 deqiqe ceke biler).");
-    if confirm("Davam edilsin?") {
-        run(
-            "DISM komponent temizliyi",
-            "Dism.exe",
-            &["/Online", "/Cleanup-Image", "/StartComponentCleanup"],
-        );
+    println!("\nRemoving superseded update files (can take 5-20 minutes).");
+    if confirm("Continue?") {
+        run("DISM component cleanup", "Dism.exe", &["/Online", "/Cleanup-Image", "/StartComponentCleanup"]);
     }
 }

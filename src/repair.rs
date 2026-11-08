@@ -1,21 +1,23 @@
-//! Sistem təmiri: SFC, DISM, Windows Update reset, Print Spooler, ikon cache, disk yoxlaması.
+//! System repair: SFC, DISM, Windows Update reset, Print Spooler, icon cache, disk check, drivers.
 
+use crate::drivers;
 use crate::util::*;
 use std::fs;
 use std::path::Path;
 
 pub fn menu() {
     loop {
-        header("Sistem temiri");
-        println!(" 1. Sistem fayllarini yoxla ve berpa et (SFC)");
-        println!(" 2. Windows image berpasi (DISM RestoreHealth) - Win8+");
-        println!(" 3. TAM temir (DISM + SFC)");
-        println!(" 4. Windows Update-i sifirla (update ilisib qalanda)");
-        println!(" 5. Printer novbesini sifirla (Print Spooler)");
-        println!(" 6. Ikon ve thumbnail cache-i yenile (ikonlar qarisanda)");
-        println!(" 7. Diski yoxla (chkdsk)");
-        println!(" 0. Geri");
-        match prompt("\nSecim: ").as_str() {
+        header("System repair");
+        println!(" 1. Check and repair system files (SFC)");
+        println!(" 2. Repair the Windows image (DISM RestoreHealth) - Win8+");
+        println!(" 3. FULL repair (DISM + SFC)");
+        println!(" 4. Reset Windows Update (when updates are stuck)");
+        println!(" 5. Reset the print queue (Print Spooler)");
+        println!(" 6. Rebuild icon & thumbnail cache (broken icons)");
+        println!(" 7. Check disk (chkdsk)");
+        println!(" 8. Find missing / broken drivers (all devices)");
+        println!(" 0. Back");
+        match prompt("\nChoice: ").as_str() {
             "1" => sfc(),
             "2" => dism(),
             "3" => {
@@ -26,6 +28,7 @@ pub fn menu() {
             "5" => reset_spooler(),
             "6" => rebuild_icon_cache(),
             "7" => check_disk(),
+            "8" => drivers::check_all(),
             "0" => return,
             _ => continue,
         }
@@ -34,22 +37,22 @@ pub fn menu() {
 }
 
 fn sfc() {
-    println!("\nSFC butun sistem fayllarini yoxlayir (10-30 deqiqe). Pencereni baglama.");
+    println!("\nSFC checks every system file (10-30 minutes). Do not close the window.");
     run("sfc /scannow", "sfc", &["/scannow"]);
 }
 
 fn dism() {
     if is_win7_or_older() {
-        println!("\nWindows 7-de DISM /RestoreHealth yoxdur.");
-        println!("Evezine Microsoft-un 'System Update Readiness Tool' (KB947821) istifade olunur.");
-        println!("SFC (1) Win7-de normal isleyir.");
+        println!("\nWindows 7 has no DISM /RestoreHealth.");
+        println!("Use Microsoft's 'System Update Readiness Tool' (KB947821) instead.");
+        println!("SFC (option 1) works normally on Windows 7.");
         return;
     }
-    println!("\nDISM Windows image-ni Windows Update-den berpa edir (internet lazimdir, 10-30 deq).");
+    println!("\nDISM repairs the Windows image from Windows Update (needs internet, 10-30 min).");
     run("DISM RestoreHealth", "Dism.exe", &["/Online", "/Cleanup-Image", "/RestoreHealth"]);
 }
 
-/// Qovluğu `<ad>.old`-a çevirir; köhnə `.old` varsa əvvəl silir.
+/// Renames a folder to `<name>.old`, deleting a previous `.old` first.
 fn rename_to_old(p: &Path) -> bool {
     if !p.exists() {
         return true;
@@ -62,13 +65,13 @@ fn rename_to_old(p: &Path) -> bool {
 }
 
 fn reset_windows_update() {
-    println!("\nUpdate servisleri dayandirilir, cache qovluqlari yenilenir, servisler yeniden baslayir.");
-    if !confirm("Davam edilsin?") {
+    println!("\nStops the update services, renews their cache folders and starts them again.");
+    if !confirm("Continue?") {
         return;
     }
     let services = ["wuauserv", "cryptSvc", "bits", "msiserver"];
     for s in services {
-        println!("  servis dayandirilir: {s}");
+        println!("  stopping service: {s}");
         cmd_quiet(&format!("net stop {s} /y"));
     }
     let win = windir();
@@ -77,25 +80,25 @@ fn reset_windows_update() {
         ("catroot2", win.join(r"System32\catroot2")),
     ] {
         let ok = rename_to_old(&p);
-        println!("  {name:<22} {}", if ok { "[OK] yenilendi" } else { "[XETA] istifadededir" });
+        println!("  {name:<22} {}", if ok { "[OK] renewed" } else { "[ERROR] in use" });
     }
     for s in services {
-        println!("  servis baslayir: {s}");
+        println!("  starting service: {s}");
         cmd_quiet(&format!("net start {s}"));
     }
-    println!("\nHazirdir. Indi Windows Update-de yeniden 'Check for updates' et.");
+    println!("\nDone. Now click 'Check for updates' in Windows Update again.");
 }
 
 fn reset_spooler() {
-    cmd("Print Spooler dayandirilir", "net stop spooler /y");
+    cmd("Stopping Print Spooler", "net stop spooler /y");
     let (f, k) = clear_dir(&windir().join(r"System32\spool\PRINTERS"));
-    println!("\n  Ilisib qalan cap isleri silindi ({}){}", human(f), if k > 0 { ", bezileri otuldu" } else { "" });
-    cmd("Print Spooler baslayir", "net start spooler");
+    println!("\n  Stuck print jobs removed ({}){}", human(f), if k > 0 { ", some skipped" } else { "" });
+    cmd("Starting Print Spooler", "net start spooler");
 }
 
 fn rebuild_icon_cache() {
-    println!("\nMasaustu ve taskbar bir neche saniye yox olacaq (Explorer yeniden baslayir).");
-    if !confirm("Davam edilsin?") {
+    println!("\nThe desktop and taskbar disappear for a few seconds (Explorer restarts).");
+    if !confirm("Continue?") {
         return;
     }
     cmd_quiet("taskkill /f /im explorer.exe");
@@ -109,20 +112,20 @@ fn rebuild_icon_cache() {
     let exp = local.join(r"Microsoft\Windows\Explorer");
     freed += remove_matching(&exp, "iconcache_", ".db");
     freed += remove_matching(&exp, "thumbcache_", ".db");
-    println!("  Cache silindi: {}", human(freed));
+    println!("  Cache removed: {}", human(freed));
     let _ = std::process::Command::new("explorer.exe").spawn();
-    println!("  Explorer yeniden basladi. Tam netice ucun bir defe sign out / restart et.");
+    println!("  Explorer restarted. Sign out / restart once for the full effect.");
 }
 
 fn check_disk() {
     let drive = env_path("SystemDrive", "C:").display().to_string();
     if is_win7_or_older() {
-        run(&format!("{drive} yoxlanir (yalniz oxuma)"), "chkdsk", &[&drive]);
+        run(&format!("Checking {drive} (read-only)"), "chkdsk", &[&drive]);
     } else {
-        run(&format!("{drive} onlayn yoxlanir"), "chkdsk", &[&drive, "/scan"]);
+        run(&format!("Online check of {drive}"), "chkdsk", &[&drive, "/scan"]);
     }
-    println!("\nXeta tapilibsa, duzeltme restart zamani edilmelidir.");
-    if confirm("Novbeti restart-da duzeltme planlansin (chkdsk /f)?") {
-        cmd("Planlanir", &format!("echo Y| chkdsk {drive} /f"));
+    println!("\nIf errors were found, they are fixed during a restart.");
+    if confirm("Schedule a repair (chkdsk /f) for the next restart?") {
+        cmd("Scheduling", &format!("echo Y| chkdsk {drive} /f"));
     }
 }

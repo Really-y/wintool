@@ -1,73 +1,130 @@
 # WinTool
 
-Windows 7 / 8 / 10 / 11 üçün menyulu, tək `.exe` təmir aləti — Rust ilə yazılıb.
-Quraşdırma, runtime və ya əlavə DLL tələb etmir; admin hüququnu özü istəyir.
+**[English](#english) · [Azərbaycanca](#azərbaycanca) · [Русский](#русский)**
 
-## Nə edir
+Menu-driven repair tool for Windows 7 / 8 / 10 / 11, written in Rust. Single `.exe`, no installer, no runtime DLLs.
 
-**0. İnternet işləmir — avtomatik tap və həll et**
+---
 
-Bir düyməylə problemin harada olduğunu özü tapır, düzəldir və sonda hesabat verir
-(ekranda + Desktop-da `WinTool-sebeke-hesabati.txt`):
+## English
 
-1. **Driver / adapter** — Device Manager xəta kodlarına baxır (28 = driver yoxdur, 22 = söndürülüb, 10/43 = işləmir),
-   cihazları yenidən skan edir, `.exe`-nin yanındakı `Drivers\` qovluğunda `.inf` varsa özü quraşdırır,
-   söndürülmüş adapteri yandırır, ilişəni yenidən başladır. Driver tapılmasa, istehsalçını və `VEN/DEV` ID-ni deyir.
-2. **Bağlantı** — Ethernet kabeli qoşulubmu; Wi-Fi qoşulmayıbsa saxlanmış şəbəkələrə özü qoşulur.
-3. **IP / DNS / internet** — DHCP (169.254), gateway, proxy, Winsock/TCP-IP, DNS — addım-addım, hər düzəlişdən sonra yenidən test.
-   İşləyən korporativ proxy-yə toxunmur, yalnız cavab verməyən (köhnə VPN / virus qalığı) proxy-ni söndürür.
-4. **Gizli səbəblər** — captive portal (hotel/ofis Wi-Fi login səhifəsi) və səhv saat (HTTPS saytları açılmır) — saatı internetdən düzəldir.
+### What it does
 
-Bütün yoxlamalar dildən asılı deyil (WMI rəqəmsal kodları, Win32 API, TCP/HTTP testləri) — istənilən dildə Windows-da işləyir.
+**1. No internet — automatic diagnose & repair.** Finds where the problem is, fixes it, and writes a report
+(on screen, on the Desktop and next to the `.exe`: `WinTool-network-report.txt`).
 
-**1. Şəbəkə təmiri (əl ilə)**
-- Tam təmir: DNS cache, IP (release/renew), Winsock, TCP/IP stack, proxy → restart
-- İnternet testi — problemin harada olduğunu deyir (TCP/IP stack · modem · internet · DNS)
-- DNS serverini dəyiş (Cloudflare / Google / avtomatik)
-- Proxy sıfırlama, Wi-Fi profillərinə bax / sil
+| Step | What it checks and fixes |
+|---|---|
+| Drivers | Device Manager error codes (28 = no driver, 22 = disabled, 10/43 = not working). Rescans hardware, installs drivers from the `Drivers` folder, enables disabled adapters, restarts stuck ones. |
+| Missing driver | If no suitable driver is available offline, it tells you **which driver is needed** (device, hardware ID, chip vendor) and **where to download it**: laptop maker → vendor site → Microsoft Update Catalog link for that exact hardware ID. |
+| Link | Ethernet cable unplugged? Wi-Fi not connected? Tries your saved Wi-Fi networks. |
+| IP / DNS | DHCP (169.254.x.x), gateway, proxy, Winsock / TCP-IP, DNS — step by step, re-testing after every fix. A working corporate proxy is left untouched; only a dead proxy (old VPN / malware leftover) is removed. |
+| Hidden causes | Captive portal (hotel / office Wi-Fi login page) and a wrong clock (HTTPS sites fail) — the clock is corrected from the internet. |
 
-**2. Sistem təmizliyi**
-- Əvvəl skan edib ölçüləri göstərir, təsdiqdən sonra silir:
-  istifadəçi/Windows Temp, Windows Update cache, xəta hesabatları (WER), thumbnail cache, zibil qutusu
-- Windows komponent təmizliyi (WinSxS) — Win7-də Disk Cleanup açır
+**2. Network repair (manual)** — full reset, DNS flush, IP renew, connection test, DNS servers, proxy reset, Wi-Fi profiles.
+**3. System cleanup** — temp, Windows Update cache, error reports, thumbnail cache, recycle bin (scan first, then confirm), WinSxS.
+**4. System repair** — SFC, DISM, Windows Update reset, Print Spooler reset, icon cache, chkdsk, **find missing drivers for all devices**.
 
-**3. Sistem təmiri**
-- SFC, DISM RestoreHealth (Win8+), tam təmir (DISM + SFC)
-- Windows Update reset (servislər + `SoftwareDistribution` / `catroot2`)
-- Print Spooler reset, ikon/thumbnail cache yenilənməsi, chkdsk
+### Offline drivers (`Drivers` folder)
 
-Windows versiyasını özü tanıyır: Win7-də olmayan əmrlər (DISM RestoreHealth, `chkdsk /scan`) uyğun alternativlə əvəz olunur.
+Put drivers into a `Drivers` folder next to `WinTool.exe`: `.inf` (with their files), `.cab` from the Microsoft Update Catalog, or `.zip`.
+WinTool unpacks the archives and installs everything; Windows picks the right driver for each device by hardware ID.
+`.exe` installers cannot be installed automatically — run them directly or unpack them with 7-Zip into `Drivers`.
 
-## Build-lər
+### Builds
 
-| Fayl | Sistem |
+| File | System |
 |---|---|
 | `wintool-win10-11-x64.exe` | Windows 10 / 11 |
 | `wintool-win7-x64.exe` | Windows 7 64-bit |
 | `wintool-win7-x86.exe` | Windows 7 32-bit |
 
-Hamısı MSVC + statik CRT ilə build olunur. Win7 build-ləri yalnız `KERNEL32`, `ntdll`, `WS2_32` import edir
-(UCRT / `api-ms-win-crt-*` asılılığı yoxdur — yenilənməmiş Win7-də də işləyir).
+All builds use MSVC with a static CRT. The Win7 builds import only `KERNEL32`, `ntdll`, `WS2_32` and `CFGMGR32` —
+no UCRT / `api-ms-win-crt-*`, so they run on an un-updated Windows 7 too. All checks are language-independent.
 
-## Build etmək (Linux-dan cross-compile)
+### Building (cross-compile from Linux)
 
-Tələblər: [rustup](https://rustup.rs) (stable + nightly `rust-src` ilə), [cargo-xwin](https://github.com/rust-cross/cargo-xwin), `clang` + `lld`.
+Requirements: [rustup](https://rustup.rs) (stable + nightly with `rust-src`), [cargo-xwin](https://github.com/rust-cross/cargo-xwin), `clang` + `lld`.
 
 ```bash
 rustup toolchain install stable -t x86_64-pc-windows-msvc
 rustup toolchain install nightly -c rust-src
 cargo install cargo-xwin --locked
-./build.sh        # nəticə: dist/*.exe
+./build.sh        # output: dist/*.exe
 ```
 
-Win7 target-ləri (`*-win7-windows-msvc`) Rust-da tier-3-dür, ona görə nightly + `-Zbuild-std` ilə build olunur.
+The Win7 targets (`*-win7-windows-msvc`) are tier 3 in Rust, so they are built with nightly + `-Zbuild-std`.
 
-## Qeyd
+---
 
-Konsol mətnləri ASCII-dir (ə→e, ş→s …) — Windows 7 konsolu UTF-8-i düzgün göstərmir.
-Təmizlik və təmir əməliyyatları geri qaytarılmır; hər riskli addımdan əvvəl təsdiq soruşulur.
+## Azərbaycanca
 
-## Lisenziya
+### Nə edir
 
-[CC BY-NC-SA 4.0](LICENSE) — müəllifi göstərməklə istifadə, dəyişdirmə və paylaşma sərbəstdir;
-**kommersiya məqsədi ilə istifadə qadağandır**, dəyişdirilmiş versiyalar eyni lisenziya ilə paylaşılmalıdır.
+**1. İnternet işləmir — avtomatik tap və həll et.** Problemin harada olduğunu özü tapır, düzəldir və hesabat yazır
+(ekranda, Desktop-da və `.exe`-nin yanında: `WinTool-network-report.txt`).
+
+| Addım | Nəyi yoxlayır və düzəldir |
+|---|---|
+| Driver | Device Manager xəta kodları (28 = driver yoxdur, 22 = söndürülüb, 10/43 = işləmir). Cihazları yenidən skan edir, `Drivers` qovluğundan driver quraşdırır, söndürülmüş adapteri yandırır, ilişəni yenidən başladır. |
+| Çatışmayan driver | Uyğun driver offline yoxdursa, **hansı driverin lazım olduğunu** (cihaz, hardware ID, çip istehsalçısı) və **haradan endirməli olduğunu** deyir: noutbuk istehsalçısı → çip istehsalçısının saytı → həmin hardware ID üçün Microsoft Update Catalog linki. |
+| Bağlantı | Ethernet kabeli qoşulubmu? Wi-Fi qoşulubmu? Saxlanmış Wi-Fi şəbəkələrinə özü qoşulur. |
+| IP / DNS | DHCP (169.254.x.x), gateway, proxy, Winsock / TCP-IP, DNS — addım-addım, hər düzəlişdən sonra yenidən test. İşləyən korporativ proxy-yə toxunmur, yalnız ölü proxy-ni (köhnə VPN / virus qalığı) söndürür. |
+| Gizli səbəblər | Captive portal (hotel / ofis Wi-Fi login səhifəsi) və səhv saat (HTTPS saytları açılmır) — saatı internetdən düzəldir. |
+
+**2. Şəbəkə təmiri (əl ilə)** — tam reset, DNS flush, IP yeniləmə, bağlantı testi, DNS serverləri, proxy reset, Wi-Fi profilləri.
+**3. Sistem təmizliyi** — temp, Windows Update cache, xəta hesabatları, thumbnail cache, zibil qutusu (əvvəl skan, sonra təsdiq), WinSxS.
+**4. Sistem təmiri** — SFC, DISM, Windows Update reset, Print Spooler reset, ikon cache, chkdsk, **bütün cihazlar üçün çatışmayan driverləri tapmaq**.
+
+### Offline driverlər (`Drivers` qovluğu)
+
+`WinTool.exe`-nin yanındakı `Drivers` qovluğuna driverləri qoy: `.inf` (faylları ilə), Microsoft Update Catalog-dan `.cab`, və ya `.zip`.
+WinTool arxivləri açır və hamısını quraşdırır; hər cihaz üçün düzgün driveri Windows özü hardware ID-yə görə seçir.
+`.exe` installer-lər avtomatik quraşdırılmır — onları birbaşa işə sal və ya 7-Zip ilə `Drivers` qovluğuna aç.
+
+### Build-lər
+
+`wintool-win10-11-x64.exe` — Windows 10 / 11 · `wintool-win7-x64.exe` — Windows 7 64-bit · `wintool-win7-x86.exe` — Windows 7 32-bit.
+Win7 build-ləri UCRT tələb etmir — yenilənməmiş Windows 7-də də işləyir. Bütün yoxlamalar Windows-un dilindən asılı deyil.
+Build qaydası yuxarıda, English bölməsindədir.
+
+---
+
+## Русский
+
+### Что умеет
+
+**1. Нет интернета — автоматическая диагностика и ремонт.** Сам находит причину, исправляет её и пишет отчёт
+(на экране, на рабочем столе и рядом с `.exe`: `WinTool-network-report.txt`).
+
+| Шаг | Что проверяет и исправляет |
+|---|---|
+| Драйверы | Коды ошибок диспетчера устройств (28 = нет драйвера, 22 = отключено, 10/43 = не работает). Повторно сканирует оборудование, ставит драйверы из папки `Drivers`, включает отключённые адаптеры, перезапускает зависшие. |
+| Нет драйвера | Если подходящего драйвера нет офлайн, сообщает, **какой драйвер нужен** (устройство, ID оборудования, производитель чипа) и **где его скачать**: сайт производителя ноутбука → сайт производителя чипа → ссылка на Microsoft Update Catalog для этого ID оборудования. |
+| Подключение | Не подключён кабель Ethernet? Не подключён Wi-Fi? Пробует сохранённые сети Wi-Fi. |
+| IP / DNS | DHCP (169.254.x.x), шлюз, прокси, Winsock / TCP-IP, DNS — по шагам, с повторной проверкой после каждого исправления. Рабочий корпоративный прокси не трогает, отключает только неработающий (остаток старого VPN / вируса). |
+| Скрытые причины | Captive portal (страница входа в Wi-Fi отеля / офиса) и неверное время (не открываются HTTPS-сайты) — время исправляется по интернету. |
+
+**2. Ремонт сети (вручную)** — полный сброс, очистка DNS, обновление IP, тест подключения, DNS-серверы, сброс прокси, профили Wi-Fi.
+**3. Очистка системы** — temp, кэш Windows Update, отчёты об ошибках, кэш эскизов, корзина (сначала сканирование, затем подтверждение), WinSxS.
+**4. Ремонт системы** — SFC, DISM, сброс Windows Update, сброс диспетчера печати, кэш значков, chkdsk, **поиск недостающих драйверов для всех устройств**.
+
+### Офлайн-драйверы (папка `Drivers`)
+
+Положите драйверы в папку `Drivers` рядом с `WinTool.exe`: `.inf` (вместе с файлами), `.cab` из Microsoft Update Catalog или `.zip`.
+WinTool распаковывает архивы и устанавливает всё; нужный драйвер для каждого устройства Windows выбирает сама по ID оборудования.
+Установщики `.exe` автоматически не ставятся — запустите их сами или распакуйте 7-Zip в папку `Drivers`.
+
+### Сборки
+
+`wintool-win10-11-x64.exe` — Windows 10 / 11 · `wintool-win7-x64.exe` — Windows 7 64-бит · `wintool-win7-x86.exe` — Windows 7 32-бит.
+Сборкам для Win7 не нужен UCRT — работают и на необновлённой Windows 7. Все проверки не зависят от языка Windows.
+Инструкция по сборке — выше, в разделе English.
+
+---
+
+## License
+
+[CC BY-NC-SA 4.0](LICENSE) — free to use, modify and share with attribution; **no commercial use**; derivatives must use the same license.
+CC BY-NC-SA 4.0 — istifadə, dəyişdirmə və paylaşma müəllifi göstərməklə sərbəstdir; **kommersiya istifadəsi qadağandır**.
+CC BY-NC-SA 4.0 — можно использовать, изменять и распространять с указанием автора; **коммерческое использование запрещено**.

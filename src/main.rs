@@ -1,8 +1,9 @@
-//! WinTool — Windows 7 / 8 / 10 / 11 üçün menyulu təmir aləti.
-//! Bölmələr: şəbəkə təmiri, sistem təmizliyi, sistem təmiri.
+//! WinTool — menu-driven repair tool for Windows 7 / 8 / 10 / 11.
+//! Sections: automatic network repair, manual network repair, cleanup, system repair.
 
 mod autofix;
 mod clean;
+mod drivers;
 mod net;
 mod repair;
 mod util;
@@ -12,17 +13,17 @@ use util::*;
 fn main() {
     let _ = std::process::Command::new("cmd").args(["/C", "title WinTool"]).status();
     loop {
-        header("Ana menyu");
+        header("Main menu");
         if !is_admin() {
-            println!("\n  DIQQET: admin huququ yoxdur. Sag klik -> 'Run as administrator'.");
+            println!("\n  WARNING: not running as administrator. Right-click -> 'Run as administrator'.");
         }
         println!();
-        println!(" 1. INTERNET ISLEMIR - avtomatik tap ve hell et");
-        println!(" 2. Sebeke temiri, el ile (DNS, IP, Wi-Fi ...)");
-        println!(" 3. Sistem temizliyi (temp, update cache, zibil qutusu)");
-        println!(" 4. Sistem temiri   (SFC, DISM, Windows Update, printer ...)");
-        println!(" 0. Cixis");
-        match prompt("\nSecim: ").as_str() {
+        println!(" 1. NO INTERNET - automatic diagnose & repair");
+        println!(" 2. Network repair, manual (DNS, IP, Wi-Fi ...)");
+        println!(" 3. System cleanup (temp, update cache, recycle bin)");
+        println!(" 4. System repair (SFC, DISM, Windows Update, drivers ...)");
+        println!(" 0. Exit");
+        match prompt("\nChoice: ").as_str() {
             "1" => {
                 autofix::run();
                 pause();

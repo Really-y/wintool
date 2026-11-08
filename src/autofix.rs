@@ -1,27 +1,24 @@
-//! Avtomatik şəbəkə diaqnostikası və təmiri.
+//! Automatic network diagnosis and repair.
 //!
-//! Ardıcıllıq: internet testi → adapter/driver → bağlantı (kabel / Wi-Fi) →
-//! IP/DHCP → gateway → proxy/Winsock → DNS → captive portal / saat → hesabat.
-//! Hər düzəlişdən sonra yenidən test edir; problem həll olunanda dayanır.
-//! Bütün yoxlamalar dildən asılı deyil (WMI rəqəmsal kodları, Win32 API, TCP testləri).
+//! Order: internet test → adapters/drivers → link (cable / Wi-Fi) → IP/DHCP → gateway →
+//! proxy/Winsock → DNS → captive portal / clock → report.
+//! Re-tests after every fix and stops as soon as the internet works.
+//! All checks are language-independent (numeric WMI codes, Win32 API, TCP/HTTP tests).
 
+use crate::drivers::{self, ProblemDevice};
 use crate::util::*;
-use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
-use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const NET_CLASS: &str = "{4d36e972-e325-11ce-bfc1-08002be10318}";
-
-// ---------------------------------------------------------------- hesabat
+// ---------------------------------------------------------------- report
 
 struct Report {
     lines: Vec<String>,
     fixed: Vec<String>,
-    manual: Vec<String>,
+    manual: Vec<Vec<String>>,
     restart_needed: bool,
 }
 
@@ -40,39 +37,14 @@ impl Report {
         self.fixed.push(s);
     }
     fn manual(&mut self, s: impl Into<String>) {
-        self.manual.push(s.into());
+        self.manual.push(vec![s.into()]);
+    }
+    fn manual_block(&mut self, block: Vec<String>) {
+        self.manual.push(block);
     }
 }
 
-// ---------------------------------------------------------------- PowerShell / WMI
-
-/// PowerShell skriptini -EncodedCommand ilə işlədir (dırnaq problemi olmur, PS 2.0+ / Win7 işləyir).
-fn ps(script: &str) -> String {
-    let utf16: Vec<u8> = script.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
-    Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand"])
-        .arg(base64(&utf16))
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default()
-}
-
-fn base64(data: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for c in data.chunks(3) {
-        let b = [c[0], *c.get(1).unwrap_or(&0), *c.get(2).unwrap_or(&0)];
-        let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
-        for i in 0..4 {
-            if i <= c.len() {
-                out.push(T[(n >> (18 - 6 * i) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
-}
+// ---------------------------------------------------------------- adapters (WMI)
 
 #[derive(Clone)]
 struct Adapter {
@@ -98,7 +70,7 @@ impl Adapter {
     }
 }
 
-/// Fiziki şəbəkə adapterləri (virtual, Bluetooth, VPN çıxarılır).
+/// Physical network adapters (virtual, Bluetooth, VPN adapters are filtered out).
 fn adapters() -> Vec<Adapter> {
     let out = ps(r#"$ErrorActionPreference='SilentlyContinue'
 Get-WmiObject Win32_NetworkAdapter -Filter "PhysicalAdapter=True" | ForEach-Object {
@@ -128,110 +100,8 @@ Get-WmiObject Win32_NetworkAdapter -Filter "PhysicalAdapter=True" | ForEach-Obje
         .collect()
 }
 
-struct ProblemDevice {
-    name: String,
-    hwid: String,
-    code: u32,
-    likely_network: bool,
-}
-
-/// Device Manager-də xətası olan və şəbəkə ilə əlaqəli ola biləcək cihazlar.
-fn problem_devices() -> Vec<ProblemDevice> {
-    let out = ps(r#"$ErrorActionPreference='SilentlyContinue'
-Get-WmiObject Win32_PnPEntity | Where-Object { $_.ConfigManagerErrorCode -ne 0 } | ForEach-Object {
- "{0}|{1}|{2}|{3}" -f $_.Name,$_.DeviceID,$_.ClassGuid,$_.ConfigManagerErrorCode }"#);
-    out.lines()
-        .filter_map(|l| {
-            let f: Vec<&str> = l.trim().split('|').collect();
-            if f.len() != 4 {
-                return None;
-            }
-            let name = f[0].to_lowercase();
-            let id = f[1].to_uppercase();
-            let code: u32 = f[3].parse().unwrap_or(0);
-            let net_class = f[2].eq_ignore_ascii_case(NET_CLASS);
-            let net_name = ["network", "ethernet", "wireless", "wi-fi", "wifi", "wlan", "802.11", "lan "]
-                .iter()
-                .any(|k| name.contains(k));
-            // Driversiz naməlum PCI/USB cihazı — tez-tez şəbəkə kartı olur.
-            let unknown_bus = code == 28 && f[2].is_empty() && (id.starts_with("PCI\\") || id.starts_with("USB\\"));
-            if net_name && name.contains("bluetooth") {
-                return None;
-            }
-            (net_class || net_name || unknown_bus).then(|| ProblemDevice {
-                name: f[0].to_string(),
-                hwid: f[1].to_string(),
-                code,
-                likely_network: net_class || net_name,
-            })
-        })
-        .collect()
-}
-
-fn code_meaning(code: u32) -> &'static str {
-    match code {
-        1 | 18 => "driver duzgun qurulmayib",
-        3 => "driver zedelenib ve ya yaddas catmir",
-        10 => "cihaz ise dusmur (driver xetasi)",
-        12 => "resurs konflikti",
-        14 => "restart lazimdir",
-        19 | 39 => "driver zedelenib / registry xetasi",
-        21 | 24 | 45 => "cihaz tapilmir (qosulmayib ve ya xarab)",
-        22 => "cihaz Device Manager-de sondurulub",
-        28 => "DRIVER QURASDIRILMAYIB",
-        31 => "driver yuklenmir",
-        37 | 52 => "driver yuklenmir (imza / uygunsuzluq)",
-        43 => "cihaz xeta verib dayandi (driver ve ya hardware)",
-        _ => "namelum xeta",
-    }
-}
-
-/// `PCI\VEN_10EC&DEV_8168&...` → ("10EC", "8168"); USB üçün VID/PID.
-fn ven_dev(hwid: &str) -> Option<(String, String)> {
-    let u = hwid.to_uppercase();
-    let grab = |key: &str| u.find(key).map(|i| u[i + key.len()..].chars().take(4).collect::<String>());
-    grab("VEN_").zip(grab("DEV_")).or_else(|| grab("VID_").zip(grab("PID_")))
-}
-
-fn vendor(ven: &str) -> &'static str {
-    match ven {
-        "10EC" | "0BDA" => "Realtek",
-        "8086" | "8087" => "Intel",
-        "168C" | "17CB" | "0CF3" => "Qualcomm Atheros",
-        "1969" => "Qualcomm Atheros / Killer",
-        "14E4" | "0A5C" => "Broadcom",
-        "14C3" | "0E8D" => "MediaTek",
-        "1814" | "148F" => "Ralink / MediaTek",
-        "11AB" | "1B4B" => "Marvell",
-        "10B7" => "3Com",
-        "0846" => "Netgear",
-        "2357" => "TP-Link",
-        "0B95" => "ASIX",
-        _ => "",
-    }
-}
-
-// ---------------------------------------------------------------- düzəlişlər
-
-#[link(name = "cfgmgr32")]
-extern "system" {
-    fn CM_Locate_DevNodeW(pdnDevInst: *mut u32, pDeviceID: *const u16, ulFlags: u32) -> u32;
-    fn CM_Reenumerate_DevNode(dnDevInst: u32, ulFlags: u32) -> u32;
-}
-
-/// Device Manager → "Scan for hardware changes" (bütün ağac, sinxron).
-fn rescan_devices() -> bool {
-    unsafe {
-        let mut root = 0u32;
-        if CM_Locate_DevNodeW(&mut root, std::ptr::null(), 0) != 0 {
-            return false;
-        }
-        CM_Reenumerate_DevNode(root, 1) == 0
-    }
-}
-
 fn wmi_adapter_call(a: &Adapter, method: &str) {
-    if a.device_id.chars().all(|c| c.is_ascii_digit()) && !a.device_id.is_empty() {
+    if !a.device_id.is_empty() && a.device_id.chars().all(|c| c.is_ascii_digit()) {
         ps(&format!(
             "$a = Get-WmiObject Win32_NetworkAdapter -Filter \"DeviceID='{}'\"; if ($a) {{ [void]$a.{method}() }}",
             a.device_id
@@ -252,49 +122,11 @@ fn restart_adapter(a: &Adapter) {
     enable_adapter(a);
 }
 
-/// `.exe`-nin yanındakı `Drivers\` qovluğunda olan bütün .inf driverləri quraşdırır.
-fn install_local_drivers(r: &mut Report) -> usize {
-    let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("Drivers"))) else {
-        return 0;
-    };
-    let mut infs = vec![];
-    collect_inf(&dir, &mut infs, 0);
-    if infs.is_empty() {
-        return 0;
-    }
-    r.log(format!("   Drivers qovlugunda {} driver tapildi, qurasdirilir...", infs.len()));
-    let mut ok = 0;
-    for inf in &infs {
-        // `pnputil -i -a` həm Win7, həm Win10/11-də işləyir.
-        let s = Command::new("pnputil").arg("-i").arg("-a").arg(inf).output();
-        if s.map(|o| o.status.success()).unwrap_or(false) {
-            ok += 1;
-        }
-    }
-    ok
-}
-
-fn collect_inf(dir: &Path, out: &mut Vec<PathBuf>, depth: u32) {
-    if depth > 6 {
-        return;
-    }
-    if let Ok(rd) = fs::read_dir(dir) {
-        for e in rd.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                collect_inf(&p, out, depth + 1);
-            } else if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("inf")) {
-                out.push(p);
-            }
-        }
-    }
-}
-
-/// Saxlanmış Wi-Fi profillərinə növbə ilə qoşulmağa çalışır.
+/// Tries saved Wi-Fi profiles one by one.
 fn wifi_connect_saved(r: &mut Report, a: &Adapter) -> bool {
     let out = Command::new("netsh").args(["wlan", "show", "profiles"]).output();
     let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
-    // Başlıq xəttindən ("-----") sonrakı "etiket : ad" sətirləri — etiket dilə görə dəyişir, ad yox.
+    // "label : name" lines after the first "-----" header line; the label is localized, the name is not.
     let profiles: Vec<String> = text
         .lines()
         .skip_while(|l| !l.trim_start().starts_with("---"))
@@ -302,17 +134,21 @@ fn wifi_connect_saved(r: &mut Report, a: &Adapter) -> bool {
         .filter(|v| !v.is_empty() && !v.contains('"'))
         .collect();
     if profiles.is_empty() {
-        r.log("   Saxlanmis Wi-Fi sebekesi yoxdur.");
+        r.log("   No saved Wi-Fi networks.");
         return false;
     }
     for p in profiles {
-        r.log(format!("   Wi-Fi-a qosulmaga calisir: {p}"));
-        let ifc = if a.conn_id.is_empty() || a.conn_id.contains('"') { String::new() } else { format!(r#" interface="{}""#, a.conn_id) };
+        r.log(format!("   Trying to connect to Wi-Fi: {p}"));
+        let ifc = if a.conn_id.is_empty() || a.conn_id.contains('"') {
+            String::new()
+        } else {
+            format!(r#" interface="{}""#, a.conn_id)
+        };
         cmd_quiet(&format!(r#"netsh wlan connect name="{p}"{ifc}"#));
         for _ in 0..6 {
             sleep(Duration::from_secs(2));
             if adapters().iter().any(|x| x.device_id == a.device_id && x.connected()) {
-                r.fix(format!("Wi-Fi-a qosuldu: {p}"));
+                r.fix(format!("Connected to Wi-Fi: {p}"));
                 return true;
             }
         }
@@ -320,12 +156,14 @@ fn wifi_connect_saved(r: &mut Report, a: &Adapter) -> bool {
     false
 }
 
+// ---------------------------------------------------------------- proxy / DNS
+
 const INET_SETTINGS: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
 
 fn reg_value(name: &str) -> Option<String> {
     let out = Command::new("reg").args(["query", INET_SETTINGS, "/v", name]).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
-    // "    ProxyServer    REG_SZ    host:port" — dəyər REG_* tipindən sonra gəlir.
+    // "    ProxyServer    REG_SZ    host:port" — the value follows the REG_* type.
     text.lines().find_map(|l| {
         let t: Vec<&str> = l.split_whitespace().collect();
         let i = t.iter().position(|x| x.starts_with("REG_"))?;
@@ -333,13 +171,13 @@ fn reg_value(name: &str) -> Option<String> {
     })
 }
 
-/// Aktiv istifadəçi proxy-si (`host:port`), yoxdursa None.
+/// Active user proxy as `host:port`, or None.
 fn user_proxy() -> Option<String> {
     if reg_value("ProxyEnable")? != "0x1" {
         return None;
     }
     let raw = reg_value("ProxyServer")?;
-    // "http=host:port;https=host:port" və ya sadəcə "host:port"
+    // "http=host:port;https=host:port" or just "host:port"
     let first = raw.split(';').find(|s| s.starts_with("https=")).or_else(|| raw.split(';').next())?;
     let hp = first.split_once('=').map(|(_, v)| v).unwrap_or(first).trim();
     let hp = hp.trim_start_matches("http://").trim_start_matches("https://").trim_end_matches('/');
@@ -368,11 +206,11 @@ fn set_dns(r: &mut Report, a: &Adapter) {
     cmd_quiet(&format!(r#"netsh interface ip add dns name="{}" addr=8.8.8.8 index=2"#, a.conn_id));
     cmd_quiet("ipconfig /flushdns");
     if ok {
-        r.fix(format!("DNS server 1.1.1.1 / 8.8.8.8 edildi ({})", a.conn_id));
+        r.fix(format!("DNS servers set to 1.1.1.1 / 8.8.8.8 ({})", a.conn_id));
     }
 }
 
-// ---------------------------------------------------------------- testlər
+// ---------------------------------------------------------------- tests
 
 #[derive(PartialEq)]
 enum Http {
@@ -412,7 +250,7 @@ fn tcp_ok(addr: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Microsoft-un öz internet testi: real internet / captive portal ayırd edir, server saatını verir.
+/// Microsoft's own connectivity test: tells real internet from a captive portal and returns server time.
 fn http_probe() -> (Http, Option<i64>) {
     let Some(addr) = ("www.msftconnecttest.com", 80).to_socket_addrs().ok().and_then(|mut i| i.next()) else {
         return (Http::Fail, None);
@@ -438,7 +276,7 @@ fn http_probe() -> (Http, Option<i64>) {
     }
 }
 
-/// "Sun, 08 Nov 2026 13:55:00 GMT" → unix saniyə.
+/// "Sun, 08 Nov 2026 13:55:00 GMT" → unix seconds.
 fn parse_http_date(s: &str) -> Option<i64> {
     let p: Vec<&str> = s.split_whitespace().collect();
     if p.len() < 5 {
@@ -467,6 +305,21 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146097 + doe - 719468
 }
 
+fn utc_string(unix: i64) -> String {
+    let days = unix.div_euclid(86400);
+    let secs = unix.rem_euclid(86400);
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
+    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}", secs / 3600, secs % 3600 / 60, secs % 60)
+}
+
 fn has_apipa() -> bool {
     let out = Command::new("ipconfig").output();
     out.map(|o| String::from_utf8_lossy(&o.stdout).contains("169.254.")).unwrap_or(false)
@@ -481,11 +334,16 @@ fn probe() -> Probe {
     Probe { gw, gw_ok, apipa: has_apipa(), tcp, dns, http, server_time }
 }
 
+fn probe_after(secs: u64) -> Probe {
+    sleep(Duration::from_secs(secs));
+    probe()
+}
+
 fn show(r: &mut Report, p: &Probe) {
     let m = |b: bool| if b { "OK" } else { "XX" };
     match &p.gw {
         Some(g) => r.log(format!("   [{}] Modem / router ({g})", m(p.gw_ok))),
-        None => r.log("   [XX] Modem / router - IP / gateway yoxdur"),
+        None => r.log("   [XX] Modem / router - no IP / gateway"),
     }
     r.log(format!("   [{}] Internet (TCP)", m(p.tcp)));
     r.log(format!("   [{}] DNS", m(p.dns)));
@@ -497,136 +355,130 @@ fn show(r: &mut Report, p: &Probe) {
     r.log(format!("   [{h}] Web (HTTP)"));
 }
 
-fn probe_after(secs: u64) -> Probe {
-    sleep(Duration::from_secs(secs));
-    probe()
-}
-
 fn now_str() -> String {
     let out = Command::new("cmd").args(["/C", "echo %date% %time%"]).output();
     out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
 }
 
-// ---------------------------------------------------------------- əsas axın
+// ---------------------------------------------------------------- main flow
 
 pub fn run() {
-    header("Internet islemir - AVTOMATIK tap ve hell et");
+    header("No internet - AUTOMATIC diagnose & repair");
     let mut r = Report::new();
-    r.log(format!("Tarix:  {}", now_str()));
-    r.log(format!("Sistem: {}", version_str()));
+    r.log(format!("Date:   {}", now_str()));
+    r.log(format!("System: {}", version_str()));
 
-    // 1) İlkin test
-    r.log("\n[1/5] Internet yoxlanilir...");
+    r.log("\n[1/5] Testing the connection...");
     let mut p = probe();
     show(&mut r, &p);
 
     if !p.ok() {
-        // 2) Adapter və driver
-        r.log("\n[2/5] Sebeke adapterleri ve driverler yoxlanilir...");
+        r.log("\n[2/5] Checking network adapters and drivers...");
         driver_stage(&mut r);
 
-        // 3) Fiziki bağlantı
-        r.log("\n[3/5] Baglanti (kabel / Wi-Fi) yoxlanilir...");
+        r.log("\n[3/5] Checking the link (cable / Wi-Fi)...");
         link_stage(&mut r);
 
-        // 4) IP / DHCP / gateway / DNS
-        r.log("\n[4/5] IP, DNS ve internet temir edilir...");
+        r.log("\n[4/5] Repairing IP, DNS and internet access...");
         p = network_stage(&mut r);
     } else {
-        r.log("\nInternet isleyir - temire ehtiyac yoxdur. Elave yoxlamalar edilir...");
+        r.log("\nInternet works - no repair needed. Running extra checks...");
     }
 
-    // 5) Captive portal və saat
-    r.log("\n[5/5] Son yoxlamalar...");
+    r.log("\n[5/5] Final checks...");
     final_stage(&mut r, &p);
     let p = probe();
     show(&mut r, &p);
 
     summary(&mut r, &p);
-    save_report(&mut r);
+    let saved = drivers::save_text("WinTool-network-report.txt", &r.lines);
+    for f in &saved {
+        r.log(format!("Report saved: {}", f.display()));
+    }
 
-    if r.restart_needed && !p.ok() && confirm("\nIndi restart edilsin?") {
-        cmd("10 saniyeye restart", "shutdown /r /t 10");
+    if r.restart_needed && !p.ok() && confirm("\nRestart now?") {
+        cmd("Restarting in 10 seconds", "shutdown /r /t 10");
     }
 }
 
 fn driver_stage(r: &mut Report) {
-    let mut ads = adapters();
-    let probs = problem_devices();
+    let ads = adapters();
+    let probs = drivers::problem_devices(true);
 
     for a in &ads {
         let st = match a.status {
-            2 | 9 => "qosulub",
-            7 => "kabel / Wi-Fi qosulmayib",
-            4 => "cihaz tapilmir",
-            5 => "sondurulub",
-            6 => "hardware xetasi",
-            0 if !a.enabled => "sondurulub",
-            _ => "qosulmayib",
+            2 | 9 => "connected",
+            7 => "cable unplugged / Wi-Fi not connected",
+            4 => "hardware not present",
+            5 => "disabled",
+            6 => "hardware malfunction",
+            0 if !a.enabled => "disabled",
+            _ => "not connected",
         };
-        r.log(format!("   {} - {st}{}", a.label(), if a.err != 0 { format!(", xeta kodu {}", a.err) } else { String::new() }));
+        let err = if a.err != 0 { format!(", error code {}", a.err) } else { String::new() };
+        r.log(format!("   {} - {st}{err}", a.label()));
     }
     for d in &probs {
-        let vd = ven_dev(&d.hwid).map(|(v, dv)| format!("  [{} VEN {v} DEV {dv}]", vendor(&v))).unwrap_or_default();
-        r.log(format!("   PROBLEM: {} - kod {}: {}{vd}", d.name, d.code, code_meaning(d.code)));
+        r.log(format!("   PROBLEM: {} - code {}: {}", d.name, d.code, drivers::code_meaning(d.code)));
     }
 
     let driver_issue = ads.is_empty() || ads.iter().any(|a| a.err != 0 && a.err != 22) || !probs.is_empty();
     if driver_issue {
         if ads.is_empty() {
-            r.log("   Hec bir fiziki sebeke adapteri tapilmadi.");
+            r.log("   No physical network adapter found.");
         }
-        r.log("   Cihazlar yeniden axtarilir (scan for hardware changes)...");
-        if rescan_devices() {
-            r.fix("Cihazlar yeniden skan edildi");
+        r.log("   Scanning for hardware changes...");
+        if drivers::rescan_devices() {
+            r.fix("Hardware rescanned");
         }
         sleep(Duration::from_secs(5));
 
-        let n = install_local_drivers(r);
-        if n > 0 {
-            r.fix(format!("{n} driver Drivers qovlugundan qurasdirildi"));
-            rescan_devices();
+        // Step 1: drivers from the USB 'Drivers' folder.
+        let mut logs = vec![];
+        let (found, ok) = drivers::install_from_folder(&mut |s| logs.push(s));
+        for l in logs {
+            r.log(l);
+        }
+        if found == 0 {
+            r.log("   'Drivers' folder is empty - nothing to install offline.");
+        } else if ok > 0 {
+            r.fix(format!("{ok} driver(s) installed from the 'Drivers' folder"));
+            drivers::rescan_devices();
             sleep(Duration::from_secs(8));
         }
 
         for a in adapters().iter().filter(|a| a.err != 0 && a.err != 22 && a.err != 28) {
-            r.log(format!("   Adapter yeniden basladilir: {}", a.label()));
+            r.log(format!("   Restarting adapter: {}", a.label()));
             restart_adapter(a);
-            r.fix(format!("Adapter yeniden basladildi: {}", a.label()));
+            r.fix(format!("Adapter restarted: {}", a.label()));
         }
         sleep(Duration::from_secs(5));
     }
 
-    // Söndürülmüş adapterləri yandır
-    ads = adapters();
-    for a in ads.iter().filter(|a| a.err == 22 || a.status == 5 || (!a.enabled && a.status == 0)) {
-        r.log(format!("   Sondurulmus adapter yandirilir: {}", a.label()));
+    // Enable disabled adapters.
+    for a in adapters().iter().filter(|a| a.err == 22 || a.status == 5 || (!a.enabled && a.status == 0)) {
+        r.log(format!("   Enabling disabled adapter: {}", a.label()));
         enable_adapter(a);
-        r.fix(format!("Adapter yandirildi: {}", a.label()));
+        r.fix(format!("Adapter enabled: {}", a.label()));
     }
 
-    // Hələ də driversiz qalanlar → əl ilə görüləcək iş
+    // Step 2: still no driver → tell exactly what to download and where.
     sleep(Duration::from_secs(3));
-    let still: Vec<ProblemDevice> = problem_devices().into_iter().filter(|d| d.code != 22).collect();
-    let no_adapter = adapters().is_empty();
-    for d in &still {
-        let (v, dv) = ven_dev(&d.hwid).unwrap_or_default();
-        let brand = vendor(&v);
-        let brand_sp = if brand.is_empty() { String::new() } else { format!("{brand} ") };
-        let what = if d.likely_network { "sebeke cihazi" } else { "namelum cihaz (sebeke karti ola biler)" };
-        r.manual(format!(
-            "{what} '{}' - {}. Driver lazimdir: {brand_sp}VEN_{v}&DEV_{dv}. Driveri {brand_sp}istehsalcinin \
-             saytindan endir, WinTool.exe-nin yanindaki 'Drivers' qovluguna qoy ve avtomatik temiri yeniden islet \
-             (ve ya Windows Update ucun basqa yolla internet ver: telefonla USB tethering).",
-            d.name,
-            code_meaning(d.code),
-        ));
+    let still: Vec<ProblemDevice> = drivers::problem_devices(true).into_iter().filter(|d| d.code != 22).collect();
+    if !still.is_empty() {
+        r.log("   The right driver is not available offline - see the download instructions below.");
     }
-    if no_adapter && still.is_empty() {
+    for d in &still {
+        let mut block = drivers::advice(d);
+        if !d.likely_network {
+            block.insert(0, "Unknown device without a driver (often the network card):".into());
+        }
+        r.manual_block(block);
+    }
+    if adapters().is_empty() && still.is_empty() {
         r.manual(
-            "Sebeke adapteri umumiyyetle gorunmur. Noutbukda Wi-Fi duymesini / Fn+F2 / airplane mode-u yoxla, \
-             BIOS-da 'Onboard LAN / WLAN' aktiv olsun. USB Wi-Fi adapterdirse, basqa USB portuna tax."
-                .to_string(),
+            "No network adapter is visible at all. On a laptop check the Wi-Fi key / Fn+F2 / airplane mode; \
+             in BIOS enable 'Onboard LAN / WLAN'. For a USB Wi-Fi adapter, try another USB port.",
         );
     }
 }
@@ -635,12 +487,12 @@ fn link_stage(r: &mut Report) {
     let ads = adapters();
     if ads.iter().any(|a| a.connected()) {
         for a in ads.iter().filter(|a| a.connected()) {
-            r.log(format!("   Qosulub: {}", a.label()));
+            r.log(format!("   Connected: {}", a.label()));
         }
         return;
     }
     for a in ads.iter().filter(|a| a.wireless() && a.err == 0) {
-        r.log(format!("   Wi-Fi qosulmayib: {}", a.label()));
+        r.log(format!("   Wi-Fi not connected: {}", a.label()));
         if wifi_connect_saved(r, a) {
             return;
         }
@@ -648,14 +500,13 @@ fn link_stage(r: &mut Report) {
     for a in ads.iter().filter(|a| a.err == 0) {
         if a.wireless() {
             r.manual(format!(
-                "Wi-Fi ({}) hec bir sebekeye qosulmayib. Wi-Fi siyahisindan sebekeni sec ve parolu yaz. \
-                 Siyahi bosdursa: airplane mode / Wi-Fi duymesi / Fn+F2.",
+                "Wi-Fi ({}) is not connected to any network. Pick your network from the Wi-Fi list and enter the password. \
+                 Empty list: check airplane mode / Wi-Fi key / Fn+F2.",
                 a.label()
             ));
         } else if a.status == 7 {
             r.manual(format!(
-                "Ethernet kabeli qosulmayib ({}). Kabeli her iki terefden yoxla, modemde basqa porta tax, \
-                 portun isigi yanmalidir.",
+                "Ethernet cable is unplugged ({}). Check both ends, try another port on the router; the port light must be on.",
                 a.label()
             ));
         }
@@ -670,73 +521,73 @@ fn network_stage(r: &mut Report) -> Probe {
     }
     let active: Vec<Adapter> = adapters().into_iter().filter(|a| a.connected()).collect();
 
-    // IP alınmayıb (DHCP)
+    // No IP from DHCP
     if !p.tcp && (p.gw.is_none() || p.apipa) {
-        r.log("   IP alinmayib (DHCP) - DHCP servisi ve IP yenilenir...");
+        r.log("   No IP address (DHCP) - checking the DHCP service and renewing IP...");
         cmd_quiet("sc config Dhcp start= auto");
         cmd_quiet("net start Dhcp");
         cmd_quiet("ipconfig /release");
         cmd_quiet("ipconfig /renew");
-        r.fix("DHCP servisi yoxlanildi, IP yenilendi");
+        r.fix("DHCP service checked, IP renewed");
         p = probe_after(5);
         if !p.tcp && (p.gw.is_none() || p.apipa) {
             for a in &active {
                 restart_adapter(a);
-                r.fix(format!("Adapter yeniden basladildi: {}", a.label()));
+                r.fix(format!("Adapter restarted: {}", a.label()));
             }
             p = probe_after(10);
         }
     }
 
-    // Gateway cavab vermir
+    // Gateway does not answer
     if !p.tcp && p.gw.is_some() && !p.gw_ok {
-        r.log("   Modem cavab vermir - IP yenilenir...");
+        r.log("   Router does not respond - renewing IP...");
         cmd_quiet("ipconfig /release");
         cmd_quiet("ipconfig /renew");
-        r.fix("IP yenilendi");
+        r.fix("IP renewed");
         p = probe_after(5);
     }
 
-    // Modem var, internet yoxdur → proxy / Winsock / TCP-IP
+    // Router OK, no internet → proxy / Winsock / TCP-IP
     if !p.tcp && p.gw_ok {
-        r.log("   Modem isleyir, internet yoxdur - proxy ve sebeke stack yoxlanilir...");
+        r.log("   Router works but no internet - checking proxy and network stack...");
         match user_proxy() {
             Some(px) if proxy_reachable(&px) => {
-                // İşləyən korporativ proxy — birbaşa çıxış bağlı ola bilər, toxunmuruq.
-                r.log(format!("   Isleyen proxy var ({px}) - bu sebeke internete proxy ile cixir, toxunulmadi."));
+                // Working corporate proxy: direct access may be blocked on purpose - leave it alone.
+                r.log(format!("   A working proxy is configured ({px}) - this network goes online through it; left unchanged."));
                 r.manual(format!(
-                    "Bu sebeke internete proxy ({px}) vasitesile cixir. Brauzer islemirse, IT sobesinden \
-                     proxy ayarlarini ve sifreni yoxlat."
+                    "This network reaches the internet through a proxy ({px}). If the browser still fails, \
+                     ask IT to check the proxy settings / your password."
                 ));
                 show(r, &p);
                 return p;
             }
             Some(px) => {
-                r.log(format!("   Proxy ({px}) cavab vermir - kohne VPN / virus qaligi ola biler, sifirlanir."));
+                r.log(format!("   Proxy ({px}) does not respond - leftover from an old VPN / malware; removing."));
                 reset_proxy_settings();
-                r.fix(format!("Islemeyen proxy ({px}) sondurudu"));
+                r.fix(format!("Dead proxy ({px}) disabled"));
             }
             None => {
                 reset_proxy_settings();
-                r.fix("Sistem proxy-si sifirlandi");
+                r.fix("System proxy reset");
             }
         }
         p = probe_after(2);
         if !p.tcp {
             cmd_quiet("netsh winsock reset");
             cmd_quiet("netsh int ip reset");
-            r.fix("Winsock ve TCP/IP stack sifirlandi (restart lazimdir)");
+            r.fix("Winsock and TCP/IP stack reset (restart required)");
             r.restart_needed = true;
         }
     }
 
-    // İnternet var, DNS yoxdur
+    // Internet OK, DNS broken
     if p.tcp && !p.dns {
-        r.log("   Internet var, DNS islemir - DNS temir edilir...");
+        r.log("   Internet works, DNS does not - repairing DNS...");
         cmd_quiet("ipconfig /flushdns");
         cmd_quiet("net stop Dnscache");
         cmd_quiet("net start Dnscache");
-        r.fix("DNS cache temizlendi, DNS servisi yeniden basladi");
+        r.fix("DNS cache flushed, DNS client service restarted");
         p = probe_after(2);
         if !p.dns {
             for a in &active {
@@ -749,9 +600,8 @@ fn network_stage(r: &mut Report) -> Probe {
 
     if !p.ok() && p.gw_ok && !p.tcp && !r.restart_needed {
         r.manual(
-            "Modem isleyir, amma internete cixis yoxdur. Modemi 30 saniye sondur-yandir; \
-             olmazsa problem provayderdedir (borc, xett qezasi) - provayderle elaqe saxla."
-                .to_string(),
+            "The router works but there is no internet behind it. Power-cycle the router for 30 seconds; \
+             if that does not help, the problem is on the provider side (unpaid bill, line outage) - call your ISP.",
         );
     }
     p
@@ -759,81 +609,58 @@ fn network_stage(r: &mut Report) -> Probe {
 
 fn final_stage(r: &mut Report, p: &Probe) {
     if p.http == Http::Portal {
-        r.log("   Bu sebeke giris sehifesi teleb edir (hotel / ofis / kafe Wi-Fi).");
+        r.log("   This network requires a login page (hotel / office / cafe Wi-Fi).");
         let _ = Command::new("cmd").args(["/C", "start", "", "http://www.msftconnecttest.com/redirect"]).status();
-        r.manual("Brauzerde acilan giris sehifesinde login ol / sertleri qebul et.".to_string());
+        r.manual("Log in / accept the terms on the page that opened in the browser.");
     }
-    // Saat yoxlaması: səhv saat HTTPS saytlarını açılmaz edir.
+    // A wrong clock breaks every HTTPS site.
     let server = p.server_time.or_else(|| http_probe().1);
     if let Some(srv) = server {
         let local = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
         let diff = (local - srv).abs();
         if diff > 300 {
-            r.log(format!("   Komputerin saati {} deqiqe sehvdir - saytlar bu sebebden acilmaya biler.", diff / 60));
+            r.log(format!("   The clock is off by {} minutes - HTTPS sites fail because of this.", diff / 60));
             let utc = utc_string(srv);
             ps(&format!(
                 "Set-Date -Date ([DateTime]::SpecifyKind([DateTime]::ParseExact('{utc}','yyyy-MM-dd HH:mm:ss',$null),'Utc')).ToLocalTime() | Out-Null"
             ));
             cmd_quiet("net start w32time");
             cmd_quiet("w32tm /resync /rediscover");
-            r.fix("Saat internetden duzeldildi");
+            r.fix("Clock corrected from the internet");
         } else {
-            r.log("   Saat duzgundur.");
+            r.log("   Clock is correct.");
         }
     }
-}
-
-fn utc_string(unix: i64) -> String {
-    let days = unix.div_euclid(86400);
-    let secs = unix.rem_euclid(86400);
-    // civil_from_days
-    let z = days + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
-    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}", secs / 3600, secs % 3600 / 60, secs % 60)
 }
 
 fn summary(r: &mut Report, p: &Probe) {
     r.log("\n==================================================");
     if p.ok() {
-        r.log("  NETICE: HELL OLUNDU - internet isleyir.");
+        r.log("  RESULT: FIXED - the internet works.");
     } else if r.restart_needed {
-        r.log("  NETICE: temir edildi, RESTART LAZIMDIR. Restartdan sonra yeniden yoxla.");
+        r.log("  RESULT: repairs applied, RESTART REQUIRED. Run WinTool again after the restart.");
     } else {
-        r.log("  NETICE: avtomatik hell olunmadi - asagidaki addimlari et.");
+        r.log("  RESULT: could not be fixed automatically - follow the steps below.");
     }
     r.log("==================================================");
     let fixed = r.fixed.clone();
     if fixed.is_empty() {
-        r.log("Edilen duzelisler: yoxdur");
+        r.log("Fixes applied: none");
     } else {
-        r.log("Edilen duzelisler:");
+        r.log("Fixes applied:");
         for f in fixed {
             r.log(format!("  + {f}"));
         }
     }
     let manual = r.manual.clone();
     if !manual.is_empty() && !p.ok() {
-        r.log("\nSenin etmeli olduqlarin:");
-        for (i, m) in manual.iter().enumerate() {
-            r.log(format!("  {}. {m}", i + 1));
+        r.log("\nWhat you need to do:");
+        for (i, block) in manual.iter().enumerate() {
+            r.log("");
+            for (j, line) in block.iter().enumerate() {
+                r.log(if j == 0 { format!("  {}. {line}", i + 1) } else { format!("     {line}") });
+            }
         }
-    }
-}
-
-fn save_report(r: &mut Report) {
-    let desktop = env_path("USERPROFILE", r"C:\Users\Public").join("Desktop");
-    let file = if desktop.is_dir() { desktop } else { std::env::temp_dir() }.join("WinTool-sebeke-hesabati.txt");
-    let body = r.lines.join("\r\n") + "\r\n";
-    match fs::write(&file, body) {
-        Ok(_) => r.log(format!("\nHesabat saxlanildi: {}", file.display())),
-        Err(e) => r.log(format!("\nHesabat saxlanila bilmedi: {e}")),
     }
 }
 
@@ -854,12 +681,5 @@ mod tests {
         assert_eq!(base64(b"f"), "Zg==");
         assert_eq!(base64(b"fo"), "Zm8=");
         assert_eq!(base64(b"foobar"), "Zm9vYmFy");
-    }
-
-    #[test]
-    fn ven_dev_parses_pci_and_usb() {
-        assert_eq!(ven_dev(r"PCI\VEN_10EC&DEV_8168&SUBSYS_1"), Some(("10EC".into(), "8168".into())));
-        assert_eq!(ven_dev(r"USB\VID_0BDA&PID_B812\123"), Some(("0BDA".into(), "B812".into())));
-        assert_eq!(ven_dev("ROOT\\NET\\0000"), None);
     }
 }

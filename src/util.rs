@@ -1,5 +1,4 @@
-//! Ortaq köməkçilər: əmr işlətmə, giriş/çıxış, Windows versiyası, qovluq təmizliyi.
-//! Konsol mətni ASCII-dir (ə→e, ş→s ...) — Win7 konsolu UTF-8-i düzgün göstərmir.
+//! Shared helpers: running commands, console I/O, Windows version, folder cleanup, PowerShell.
 
 use std::env;
 use std::fs;
@@ -8,19 +7,19 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// Proqramı arqumentlərlə işə salır, çıxışını birbaşa konsola verir.
+/// Runs a program with arguments; its output goes straight to the console.
 pub fn run(desc: &str, prog: &str, args: &[&str]) -> bool {
     println!("\n>> {desc}");
     report(Command::new(prog).args(args).status())
 }
 
-/// `cmd /C <line>` — sətir olduğu kimi ötürülür (Rust əlavə dırnaq qoymur).
+/// `cmd /C <line>` — the line is passed verbatim (Rust adds no extra quoting).
 pub fn cmd(desc: &str, line: &str) -> bool {
     println!("\n>> {desc}");
     report(Command::new("cmd").arg("/C").raw_arg(line).status())
 }
 
-/// Səssiz işlədir (servis dayandırma və s. üçün) — yalnız uğuru qaytarır.
+/// Runs silently (service stop/start etc.) and only reports success.
 pub fn cmd_quiet(line: &str) -> bool {
     Command::new("cmd")
         .arg("/C")
@@ -39,14 +38,47 @@ fn report(r: io::Result<std::process::ExitStatus>) -> bool {
             true
         }
         Ok(s) => {
-            println!("   [XETA] cixis kodu: {}", s.code().unwrap_or(-1));
+            println!("   [ERROR] exit code: {}", s.code().unwrap_or(-1));
             false
         }
         Err(e) => {
-            println!("   [XETA] {e}");
+            println!("   [ERROR] {e}");
             false
         }
     }
+}
+
+/// Runs a PowerShell script via -EncodedCommand (no quoting issues; works with PS 2.0 on Win7).
+pub fn ps(script: &str) -> String {
+    let utf16: Vec<u8> = script.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+    Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand"])
+        .arg(base64(&utf16))
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+pub fn base64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for c in data.chunks(3) {
+        let b = [c[0], *c.get(1).unwrap_or(&0), *c.get(2).unwrap_or(&0)];
+        let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
+        for i in 0..4 {
+            if i <= c.len() {
+                out.push(T[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// Single-quoted PowerShell string literal.
+pub fn ps_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
 }
 
 pub fn prompt(msg: &str) -> String {
@@ -58,23 +90,23 @@ pub fn prompt(msg: &str) -> String {
 }
 
 pub fn confirm(msg: &str) -> bool {
-    matches!(prompt(&format!("{msg} [b/x]: ")).to_lowercase().as_str(), "b" | "y" | "beli" | "yes")
+    matches!(prompt(&format!("{msg} [y/n]: ")).to_lowercase().as_str(), "y" | "yes")
 }
 
 pub fn pause() {
-    prompt("\nDavam etmek ucun Enter...");
+    prompt("\nPress Enter to continue...");
 }
 
 pub fn header(title: &str) {
     let _ = Command::new("cmd").args(["/C", "cls"]).status();
     println!("==================================================");
     println!("  WinTool  |  {title}");
-    println!("  {}  |  Admin: {}", version_str(), if is_admin() { "beli" } else { "XEYR" });
+    println!("  {}  |  Admin: {}", version_str(), if is_admin() { "yes" } else { "NO" });
     println!("==================================================");
 }
 
-/// `ver` çıxışından (məs. "Microsoft Windows [Version 6.1.7601]") major/minor/build.
-/// Dil fərqindən asılı olmamaq üçün yalnız mötərizə içindəki rəqəmlərə baxır.
+/// Parses `ver` output (e.g. "Microsoft Windows [Version 6.1.7601]") into major/minor/build.
+/// Only the digits inside the brackets are used, so the display language does not matter.
 pub fn win_version() -> (u32, u32, u32) {
     let out = Command::new("cmd").args(["/C", "ver"]).output();
     let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
@@ -91,7 +123,7 @@ pub fn win_version() -> (u32, u32, u32) {
     )
 }
 
-/// Windows 7 və ya daha köhnə (NT 6.1 və aşağı).
+/// Windows 7 or older (NT 6.1 and below).
 pub fn is_win7_or_older() -> bool {
     let (ma, mi, _) = win_version();
     ma < 6 || (ma == 6 && mi <= 1)
@@ -111,7 +143,7 @@ pub fn version_str() -> String {
     format!("{name} ({ma}.{mi}.{b})")
 }
 
-/// `net session` yalnız admin altında uğurlu olur.
+/// `net session` only succeeds when elevated.
 pub fn is_admin() -> bool {
     cmd_quiet("net session")
 }
@@ -124,7 +156,12 @@ pub fn windir() -> PathBuf {
     env_path("SystemRoot", r"C:\Windows")
 }
 
-/// Qovluğun ümumi ölçüsü (bayt), oxuna bilməyən yerlər ötürülür.
+/// Folder that contains WinTool.exe (e.g. the USB stick).
+pub fn exe_dir() -> Option<PathBuf> {
+    env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf))
+}
+
+/// Total size of a folder in bytes; unreadable entries are skipped.
 pub fn dir_size(p: &Path) -> u64 {
     let Ok(rd) = fs::read_dir(p) else { return 0 };
     rd.flatten()
@@ -136,8 +173,8 @@ pub fn dir_size(p: &Path) -> u64 {
         .sum()
 }
 
-/// Qovluğun İÇİNİ silir (qovluğun özü qalır). İstifadədə olan fayllar ötürülür.
-/// Qaytarır: (boşalan bayt, silinə bilməyən element sayı).
+/// Deletes the CONTENTS of a folder (the folder itself stays). Files in use are skipped.
+/// Returns (bytes freed, number of entries that could not be removed).
 pub fn clear_dir(p: &Path) -> (u64, u32) {
     let before = dir_size(p);
     let mut failed = 0;
@@ -154,7 +191,7 @@ pub fn clear_dir(p: &Path) -> (u64, u32) {
     (before.saturating_sub(dir_size(p)), failed)
 }
 
-/// Qovluqda adı `prefix` ilə başlayıb `suffix` ilə bitən faylları silir.
+/// Deletes files in `dir` whose lowercase name starts with `prefix` and ends with `suffix`.
 pub fn remove_matching(dir: &Path, prefix: &str, suffix: &str) -> u64 {
     let mut freed = 0;
     if let Ok(rd) = fs::read_dir(dir) {
