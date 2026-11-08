@@ -6,6 +6,10 @@ Menu-driven repair tool for Windows 7 / 8 / 10 / 11, written in Rust. Single `.e
 
 **by Yusif Ezizov | AZEDEV** · [azedev.com](https://azedev.com) · [guns.lol/azizowv](https://guns.lol/azizowv)
 
+![WinTool main menu](docs/main-menu.png)
+
+<sub>Main menu on a Windows 10/11 console (truecolor). Rendered from the program's own art and menu layout. On the Windows 7 console the banner uses 16 colors and the boxes are ASCII.</sub>
+
 ---
 
 ## English
