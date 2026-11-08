@@ -19,8 +19,14 @@ use std::time::{Duration, Instant};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const AUTHOR: &str = "Yusif Ezizov | AZEDEV";
 pub const SITE: &str = "azedev.com";
-const BOX_W: usize = 62;
-const PANEL_COL: u16 = 27;
+const BOX_W: usize = 72;
+
+/// Truecolor art when the console understands VT sequences (Windows 10+);
+/// the 16-color art on the Windows 7 legacy console.
+fn truecolor() -> bool {
+    static T: OnceLock<bool> = OnceLock::new();
+    *T.get_or_init(|| !util::is_win7_or_older() && crossterm::ansi_support::supports_ansi())
+}
 
 /// Unicode box drawing on Win8+, ASCII on the Win7 legacy console.
 fn fancy() -> bool {
@@ -133,8 +139,21 @@ pub fn header(title: &str) {
     let _ = queue!(out, Print(g.v), SetForegroundColor(Color::White), SetAttribute(Attribute::Bold));
     let _ = queue!(out, Print(format!(" {:<w$}", format!("WinTool  |  {title}"), w = BOX_W - 1)), SetAttribute(Attribute::Reset));
     let _ = queue!(out, SetForegroundColor(Color::Cyan), Print(format!("{}\n", g.v)));
-    let _ = queue!(out, Print(g.v), SetForegroundColor(Color::DarkGrey), Print(format!(" {:<w$}", status, w = BOX_W - 1)));
+    let sig = format!("by {AUTHOR}");
+    let gap = (BOX_W - 1).saturating_sub(status.len() + sig.len() + 1);
+    let _ = queue!(out, Print(g.v), SetForegroundColor(Color::DarkGrey), Print(format!(" {status}{}", " ".repeat(gap))));
+    let _ = queue!(out, SetForegroundColor(Color::Green), Print(&sig), Print(" "));
     let _ = queue!(out, SetForegroundColor(Color::Cyan), Print(format!("{}\n{}{bar}{}\n", g.v, g.bl, g.br)), ResetColor);
+    let _ = out.flush();
+}
+
+/// Shown when WinTool exits.
+pub fn goodbye() {
+    clear();
+    let mut out = stdout();
+    let _ = queue!(out, Print("\n  WinTool v"), Print(VERSION), Print("  -  "));
+    let _ = queue!(out, SetForegroundColor(Color::Green), SetAttribute(Attribute::Bold), Print(AUTHOR), SetAttribute(Attribute::Reset));
+    let _ = queue!(out, SetForegroundColor(Color::DarkGrey), Print(format!("  -  {SITE}\n\n")), ResetColor);
     let _ = out.flush();
 }
 
@@ -165,24 +184,35 @@ fn palette(idx: u8) -> Color {
     }
 }
 
-fn px(row: Option<&&str>, x: usize) -> Option<u8> {
-    row.and_then(|r| r.as_bytes().get(x)).and_then(|&c| (c as char).to_digit(16)).map(|d| d as u8)
+/// Color of the art pixel at (x, y), or None for transparent.
+fn art_px(y: usize, x: usize) -> Option<Color> {
+    if truecolor() {
+        let hex = art::RGB_PIXELS.get(y)?.get(x * 6..x * 6 + 6)?;
+        let c = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+        Some(Color::Rgb { r: c(0)?, g: c(2)?, b: c(4)? })
+    } else {
+        let d = (*art::PIXELS.get(y)?.as_bytes().get(x)? as char).to_digit(16)?;
+        Some(palette(d as u8))
+    }
+}
+
+fn art_width() -> usize {
+    if truecolor() { art::RGB_WIDTH } else { art::WIDTH }
 }
 
 pub fn art_rows() -> usize {
-    art::PIXELS.len().div_ceil(2)
+    let px = if truecolor() { art::RGB_PIXELS.len() } else { art::PIXELS.len() };
+    px.div_ceil(2)
 }
 
 /// Draws one text row of the banner (two pixel rows) at the cursor position.
 fn art_row(out: &mut impl Write, row: usize) {
-    let top = art::PIXELS.get(row * 2);
-    let bot = art::PIXELS.get(row * 2 + 1);
-    for x in 0..art::WIDTH {
-        let _ = match (px(top, x), px(bot, x)) {
+    for x in 0..art_width() {
+        let _ = match (art_px(row * 2, x), art_px(row * 2 + 1, x)) {
             (None, None) => queue!(out, ResetColor, Print(' ')),
-            (Some(t), None) => queue!(out, ResetColor, SetForegroundColor(palette(t)), Print('▀')),
-            (None, Some(b)) => queue!(out, ResetColor, SetForegroundColor(palette(b)), Print('▄')),
-            (Some(t), Some(b)) => queue!(out, SetForegroundColor(palette(t)), SetBackgroundColor(palette(b)), Print('▀')),
+            (Some(t), None) => queue!(out, ResetColor, SetForegroundColor(t), Print('▀')),
+            (None, Some(b)) => queue!(out, ResetColor, SetForegroundColor(b), Print('▄')),
+            (Some(t), Some(b)) => queue!(out, SetForegroundColor(t), SetBackgroundColor(b), Print('▀')),
         };
     }
     let _ = queue!(out, ResetColor);
@@ -224,7 +254,7 @@ fn draw_menu(title: &str, items: &[&str], back: &str, sel: usize, with_art: bool
     }
     rows.push(Row::Dim(status_line()));
     if !util::is_admin() {
-        rows.push(Row::Warn("Not elevated: right-click -> Run as administrator".into()));
+        rows.push(Row::Warn("Not admin! Right-click -> Run as admin".into()));
     }
     rows.push(Row::Blank);
     for (i, it) in items.iter().enumerate() {
@@ -233,7 +263,7 @@ fn draw_menu(title: &str, items: &[&str], back: &str, sel: usize, with_art: bool
     rows.push(Row::Item { key: '0', label: back.to_string(), selected: false });
     rows.push(Row::Blank);
     let arrows = if fancy() { "↑/↓" } else { "Up/Down" };
-    rows.push(Row::Dim(format!("{arrows} move  Enter select  1-{} shortcut  Esc {back}", items.len().min(9))));
+    rows.push(Row::Dim(format!("{arrows} move  Enter ok  1-{} keys  Esc {back}", items.len().min(9))));
 
     let mut out = stdout();
     let _ = queue!(out, ResetColor, Clear(ClearType::All));
@@ -247,7 +277,7 @@ fn draw_menu(title: &str, items: &[&str], back: &str, sel: usize, with_art: bool
             }
             if y >= top_pad {
                 if let Some(r) = rows.get(y - top_pad) {
-                    let _ = queue!(out, MoveTo(PANEL_COL, y as u16));
+                    let _ = queue!(out, MoveTo(art_width() as u16 + 3, y as u16));
                     draw_row(&mut out, r);
                 }
             }

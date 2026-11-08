@@ -13,7 +13,7 @@ mod ui;
 mod util;
 
 const ITEMS: [&str; 4] = [
-    "NO INTERNET - automatic diagnose & repair",
+    "NO INTERNET - auto diagnose & repair",
     "Network repair, manual (DNS, IP, Wi-Fi ...)",
     "System cleanup (temp, update cache ...)",
     "System repair (SFC, DISM, drivers ...)",
@@ -32,5 +32,5 @@ fn main() {
             _ => repair::menu(),
         }
     }
-    ui::clear();
+    ui::goodbye();
 }
