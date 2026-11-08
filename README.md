@@ -5,7 +5,22 @@ Quraşdırma, runtime və ya əlavə DLL tələb etmir; admin hüququnu özü is
 
 ## Nə edir
 
-**1. Şəbəkə təmiri**
+**0. İnternet işləmir — avtomatik tap və həll et**
+
+Bir düyməylə problemin harada olduğunu özü tapır, düzəldir və sonda hesabat verir
+(ekranda + Desktop-da `WinTool-sebeke-hesabati.txt`):
+
+1. **Driver / adapter** — Device Manager xəta kodlarına baxır (28 = driver yoxdur, 22 = söndürülüb, 10/43 = işləmir),
+   cihazları yenidən skan edir, `.exe`-nin yanındakı `Drivers\` qovluğunda `.inf` varsa özü quraşdırır,
+   söndürülmüş adapteri yandırır, ilişəni yenidən başladır. Driver tapılmasa, istehsalçını və `VEN/DEV` ID-ni deyir.
+2. **Bağlantı** — Ethernet kabeli qoşulubmu; Wi-Fi qoşulmayıbsa saxlanmış şəbəkələrə özü qoşulur.
+3. **IP / DNS / internet** — DHCP (169.254), gateway, proxy, Winsock/TCP-IP, DNS — addım-addım, hər düzəlişdən sonra yenidən test.
+   İşləyən korporativ proxy-yə toxunmur, yalnız cavab verməyən (köhnə VPN / virus qalığı) proxy-ni söndürür.
+4. **Gizli səbəblər** — captive portal (hotel/ofis Wi-Fi login səhifəsi) və səhv saat (HTTPS saytları açılmır) — saatı internetdən düzəldir.
+
+Bütün yoxlamalar dildən asılı deyil (WMI rəqəmsal kodları, Win32 API, TCP/HTTP testləri) — istənilən dildə Windows-da işləyir.
+
+**1. Şəbəkə təmiri (əl ilə)**
 - Tam təmir: DNS cache, IP (release/renew), Winsock, TCP/IP stack, proxy → restart
 - İnternet testi — problemin harada olduğunu deyir (TCP/IP stack · modem · internet · DNS)
 - DNS serverini dəyiş (Cloudflare / Google / avtomatik)
