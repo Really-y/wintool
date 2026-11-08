@@ -1,33 +1,38 @@
 //! Manual network repair: DNS, IP, Winsock/TCP-IP reset, proxy, DNS servers, Wi-Fi profiles, diagnostics.
 
+use crate::safety;
+use crate::ui::{self, Kind};
 use crate::util::*;
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::process::Command;
 use std::time::Duration;
 
+const ITEMS: [&str; 7] = [
+    "FULL network reset (everything, then restart)",
+    "Flush DNS cache",
+    "Renew IP address (release / renew)",
+    "Connection test - where is the problem?",
+    "Change DNS servers (Cloudflare / Google / auto)",
+    "Reset proxy settings",
+    "Wi-Fi profiles (view / delete)",
+];
+
 pub fn menu() {
-    loop {
-        header("Network repair (manual)");
-        println!(" 1. FULL network reset (everything at once, then restart)");
-        println!(" 2. Flush DNS cache");
-        println!(" 3. Renew IP address (release / renew)");
-        println!(" 4. Connection test - where is the problem?");
-        println!(" 5. Change DNS servers (Cloudflare / Google / automatic)");
-        println!(" 6. Reset proxy settings");
-        println!(" 7. Wi-Fi profiles (view / delete)");
-        println!(" 0. Back");
-        match prompt("\nChoice: ").as_str() {
-            "1" => full_repair(),
-            "2" => {
+    while let Some(i) = ui::menu("Network repair (manual)", &ITEMS, "Back", false) {
+        ui::header(ITEMS[i]);
+        match i {
+            0 => full_repair(),
+            1 => {
                 cmd("Flushing DNS cache", "ipconfig /flushdns");
             }
-            "3" => renew_ip(),
-            "4" => diagnose(),
-            "5" => change_dns(),
-            "6" => reset_proxy(),
-            "7" => wifi(),
-            "0" => return,
-            _ => continue,
+            2 => renew_ip(),
+            3 => diagnose(),
+            4 => change_dns(),
+            5 => {
+                safety::checkpoint();
+                reset_proxy();
+            }
+            _ => wifi(),
         }
         pause();
     }
@@ -52,6 +57,7 @@ fn full_repair() {
     if !confirm("Continue?") {
         return;
     }
+    safety::checkpoint();
     cmd("Flushing DNS cache", "ipconfig /flushdns");
     renew_ip();
     cmd("Re-registering DNS", "ipconfig /registerdns");
@@ -81,28 +87,27 @@ fn tcp_ok(addr: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn mark(ok: bool) -> &'static str {
-    if ok { "OK" } else { "XX" }
+fn mark(ok: bool) -> Kind {
+    if ok { Kind::Ok } else { Kind::Fail }
 }
 
 fn diagnose() {
-    println!("\nTesting...\n");
-
-    let stack = cmd_quiet("ping -n 1 -w 1000 127.0.0.1");
-    println!(" [{}] TCP/IP stack (127.0.0.1)", mark(stack));
-
-    let gw = default_gateway();
-    let gw_ok = gw.as_deref().map(|g| cmd_quiet(&format!("ping -n 2 -w 1500 {g}"))).unwrap_or(false);
+    let (stack, gw, gw_ok, net, dns) = ui::spin("Testing", || {
+        let stack = cmd_quiet("ping -n 1 -w 1000 127.0.0.1");
+        let gw = default_gateway();
+        let gw_ok = gw.as_deref().map(|g| cmd_quiet(&format!("ping -n 2 -w 1500 {g}"))).unwrap_or(false);
+        let net = tcp_ok("1.1.1.1:443") || tcp_ok("8.8.8.8:443");
+        let dns = ("www.google.com", 443).to_socket_addrs().map(|mut i| i.next().is_some()).unwrap_or(false);
+        (stack, gw, gw_ok, net, dns)
+    });
+    println!();
+    ui::line(mark(stack), "TCP/IP stack (127.0.0.1)");
     match &gw {
-        Some(g) => println!(" [{}] Modem / router ({g})", mark(gw_ok)),
-        None => println!(" [{}] Modem / router - no default gateway", mark(false)),
+        Some(g) => ui::line(mark(gw_ok), &format!("Modem / router ({g})")),
+        None => ui::line(Kind::Fail, "Modem / router - no default gateway"),
     }
-
-    let net = tcp_ok("1.1.1.1:443") || tcp_ok("8.8.8.8:443");
-    println!(" [{}] Internet (direct IP connection)", mark(net));
-
-    let dns = ("www.google.com", 443).to_socket_addrs().map(|mut i| i.next().is_some()).unwrap_or(false);
-    println!(" [{}] DNS (name -> IP resolution)", mark(dns));
+    ui::line(mark(net), "Internet (direct IP connection)");
+    ui::line(mark(dns), "DNS (name -> IP resolution)");
 
     println!("\nVerdict:");
     if !stack {
@@ -146,6 +151,7 @@ fn change_dns() {
         }
         _ => return,
     };
+    safety::checkpoint();
     cmd(&format!("Primary DNS: {a}"), &format!(r#"netsh interface ip set dns name="{ifc}" source=static addr={a}"#));
     cmd(&format!("Secondary DNS: {b}"), &format!(r#"netsh interface ip add dns name="{ifc}" addr={b} index=2"#));
     cmd("Flushing DNS cache", "ipconfig /flushdns");

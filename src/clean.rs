@@ -1,5 +1,6 @@
 //! System cleanup: temp files, Windows Update cache, error reports, thumbnail cache, recycle bin.
 
+use crate::ui;
 use crate::util::*;
 use std::path::PathBuf;
 
@@ -59,21 +60,21 @@ fn targets() -> Vec<Target> {
     ]
 }
 
+const ITEMS: [&str; 3] = [
+    "Quick cleanup (temp, update cache, recycle bin ...)",
+    "Windows component cleanup (WinSxS - old updates)",
+    "Open Windows Disk Cleanup (cleanmgr)",
+];
+
 pub fn menu() {
-    loop {
-        header("System cleanup");
-        println!(" 1. Quick cleanup (temp, update cache, recycle bin ...)");
-        println!(" 2. Windows component cleanup (WinSxS - old updates)");
-        println!(" 3. Open Windows Disk Cleanup (cleanmgr)");
-        println!(" 0. Back");
-        match prompt("\nChoice: ").as_str() {
-            "1" => quick_clean(),
-            "2" => component_cleanup(),
-            "3" => {
+    while let Some(i) = ui::menu("System cleanup", &ITEMS, "Back", false) {
+        ui::header(ITEMS[i]);
+        match i {
+            0 => quick_clean(),
+            1 => component_cleanup(),
+            _ => {
                 run("Opening Disk Cleanup", "cleanmgr", &[]);
             }
-            "0" => return,
-            _ => continue,
         }
         pause();
     }
@@ -98,8 +99,8 @@ fn size_of(t: &Target) -> u64 {
 
 fn quick_clean() {
     let ts = targets();
-    println!("\nScanning...\n");
-    let sizes: Vec<u64> = ts.iter().map(size_of).collect();
+    let sizes: Vec<u64> = ui::spin("Scanning", || ts.iter().map(size_of).collect());
+    println!();
     for (t, s) in ts.iter().zip(&sizes) {
         println!("  {:<38} {:>10}", t.name, human(*s));
     }
@@ -128,11 +129,11 @@ fn quick_clean() {
         for s in t.services {
             cmd_quiet(&format!("net start {s}"));
         }
-        println!("  {:<38} {:>10} freed", t.name, human(f));
+        ui::ok(&format!("{:<38} {:>10} freed", t.name, human(f)));
         freed += f;
         skipped += k;
     }
-    println!("\nTotal freed: {}", human(freed));
+    ui::result(true, &format!("Total freed: {}", human(freed)));
     if skipped > 0 {
         println!("({skipped} item(s) skipped because they are in use - this is normal.)");
     }

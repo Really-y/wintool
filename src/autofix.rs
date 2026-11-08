@@ -6,6 +6,9 @@
 //! All checks are language-independent (numeric WMI codes, Win32 API, TCP/HTTP tests).
 
 use crate::drivers::{self, ProblemDevice};
+use crate::online;
+use crate::safety;
+use crate::ui::{self, Kind};
 use crate::util::*;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
@@ -19,27 +22,52 @@ struct Report {
     lines: Vec<String>,
     fixed: Vec<String>,
     manual: Vec<Vec<String>>,
+    advised: Vec<String>,
     restart_needed: bool,
 }
 
 impl Report {
     fn new() -> Self {
-        Self { lines: vec![], fixed: vec![], manual: vec![], restart_needed: false }
+        Self { lines: vec![], fixed: vec![], manual: vec![], advised: vec![], restart_needed: false }
+    }
+    /// Colored line on screen, plain line in the report file.
+    fn put(&mut self, kind: Kind, s: impl Into<String>) {
+        let s = s.into();
+        ui::line(kind, &s);
+        self.lines.push(ui::plain(kind, &s));
     }
     fn log(&mut self, s: impl Into<String>) {
         let s = s.into();
-        println!("{s}");
-        self.lines.push(s);
+        let kind = if s.trim_start().starts_with("PROBLEM") { Kind::Warn } else { Kind::Plain };
+        self.put(kind, s);
+    }
+    fn step(&mut self, s: &str) {
+        ui::step(s);
+        self.lines.push(String::new());
+        self.lines.push(s.to_string());
+    }
+    /// Report file only (not printed).
+    fn note(&mut self, s: impl Into<String>) {
+        self.lines.push(s.into());
     }
     fn fix(&mut self, s: impl Into<String>) {
         let s = s.into();
-        self.log(format!("   -> {s}"));
+        self.put(Kind::Ok, s.clone());
         self.fixed.push(s);
     }
     fn manual(&mut self, s: impl Into<String>) {
         self.manual.push(vec![s.into()]);
     }
-    fn manual_block(&mut self, block: Vec<String>) {
+    /// Download advice for a device, once per hardware ID.
+    fn advise(&mut self, d: &ProblemDevice) {
+        if self.advised.iter().any(|h| h.eq_ignore_ascii_case(&d.hwid)) {
+            return;
+        }
+        self.advised.push(d.hwid.clone());
+        let mut block = drivers::advice(d);
+        if !d.likely_network && d.code == 28 && d.hwid.to_uppercase().starts_with("PCI") {
+            block.insert(0, "Unknown device without a driver (often the network card):".into());
+        }
         self.manual.push(block);
     }
 }
@@ -340,19 +368,35 @@ fn probe_after(secs: u64) -> Probe {
 }
 
 fn show(r: &mut Report, p: &Probe) {
-    let m = |b: bool| if b { "OK" } else { "XX" };
+    let k = |b: bool| if b { Kind::Ok } else { Kind::Fail };
     match &p.gw {
-        Some(g) => r.log(format!("   [{}] Modem / router ({g})", m(p.gw_ok))),
-        None => r.log("   [XX] Modem / router - no IP / gateway"),
+        Some(g) => r.put(k(p.gw_ok), format!("Modem / router ({g})")),
+        None => r.put(Kind::Fail, "Modem / router - no IP / gateway"),
     }
-    r.log(format!("   [{}] Internet (TCP)", m(p.tcp)));
-    r.log(format!("   [{}] DNS", m(p.dns)));
+    r.put(k(p.tcp), "Internet (TCP)");
+    r.put(k(p.dns), "DNS");
     let h = match p.http {
-        Http::Ok => "OK",
-        Http::Portal => "!!",
-        Http::Fail => "XX",
+        Http::Ok => Kind::Ok,
+        Http::Portal => Kind::Warn,
+        Http::Fail => Kind::Fail,
     };
-    r.log(format!("   [{h}] Web (HTTP)"));
+    r.put(h, "Web (HTTP)");
+}
+
+/// Current DNS / proxy settings, written to the report before anything is changed.
+fn record_settings(r: &mut Report) {
+    r.note("");
+    r.note("--- Settings before repair (to restore manually if needed) ---");
+    r.note(format!("User proxy: ProxyEnable={} ProxyServer={}", reg_value("ProxyEnable").unwrap_or_default(), reg_value("ProxyServer").unwrap_or_default()));
+    for (title, args) in [("WinHTTP proxy", &["winhttp", "show", "proxy"][..]), ("DNS servers", &["interface", "ip", "show", "dns"][..])] {
+        let out = Command::new("netsh").args(args).output();
+        let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+        r.note(format!("{title}:"));
+        for l in text.lines().filter(|l| !l.trim().is_empty()) {
+            r.note(format!("  {}", l.trim_end()));
+        }
+    }
+    r.note("--- end of previous settings ---");
 }
 
 fn now_str() -> String {
@@ -363,40 +407,57 @@ fn now_str() -> String {
 // ---------------------------------------------------------------- main flow
 
 pub fn run() {
-    header("No internet - AUTOMATIC diagnose & repair");
+    ui::header("No internet - AUTOMATIC diagnose & repair");
     let mut r = Report::new();
-    r.log(format!("Date:   {}", now_str()));
-    r.log(format!("System: {}", version_str()));
+    r.note(format!("WinTool {} - network report", ui::VERSION));
+    r.put(Kind::Plain, format!("  Date:   {}", now_str()));
+    r.put(Kind::Plain, format!("  System: {}", version_str()));
 
-    r.log("\n[1/5] Testing the connection...");
-    let mut p = probe();
+    r.step("[1/6] Testing the connection");
+    let mut p = ui::spin("Testing", probe);
     show(&mut r, &p);
 
     if !p.ok() {
-        r.log("\n[2/5] Checking network adapters and drivers...");
+        safety::checkpoint();
+        record_settings(&mut r);
+
+        r.step("[2/6] Network adapters and drivers");
         driver_stage(&mut r);
 
-        r.log("\n[3/5] Checking the link (cable / Wi-Fi)...");
+        r.step("[3/6] Link (cable / Wi-Fi)");
         link_stage(&mut r);
 
-        r.log("\n[4/5] Repairing IP, DNS and internet access...");
+        r.step("[4/6] IP, DNS and internet access");
         p = network_stage(&mut r);
     } else {
-        r.log("\nInternet works - no repair needed. Running extra checks...");
+        r.put(Kind::Ok, "Internet works - no network repair needed.");
     }
 
-    r.log("\n[5/5] Final checks...");
+    r.step("[5/6] Captive portal and clock");
     final_stage(&mut r, &p);
-    let p = probe();
+    let p = ui::spin("Re-testing", probe);
     show(&mut r, &p);
 
-    summary(&mut r, &p);
-    let saved = drivers::save_text("WinTool-network-report.txt", &r.lines);
-    for f in &saved {
-        r.log(format!("Report saved: {}", f.display()));
+    r.step("[6/6] Other drivers (Windows Update / Snappy Driver Installer)");
+    if p.ok() {
+        let outcome = online::run(&mut |k, s| r.put(k, s), false);
+        r.restart_needed |= outcome.reboot;
+        for d in &outcome.remaining {
+            r.advise(d);
+        }
+        if let Some(dir) = outcome.kept_dir {
+            r.manual(format!("Snappy Driver Installer files were kept for a retry in {} - delete with: rmdir /s /q \"{}\"", dir.display(), dir.display()));
+        }
+    } else {
+        r.put(Kind::Info, "Skipped - needs a working internet connection.");
     }
 
-    if r.restart_needed && !p.ok() && confirm("\nRestart now?") {
+    summary(&mut r, &p);
+    for f in drivers::save_text("WinTool-network-report.txt", &r.lines) {
+        ui::ok(&format!("Report saved: {}", f.display()));
+    }
+
+    if r.restart_needed && ui::ask("Restart now?", false) {
         cmd("Restarting in 10 seconds", "shutdown /r /t 10");
     }
 }
@@ -469,11 +530,7 @@ fn driver_stage(r: &mut Report) {
         r.log("   The right driver is not available offline - see the download instructions below.");
     }
     for d in &still {
-        let mut block = drivers::advice(d);
-        if !d.likely_network {
-            block.insert(0, "Unknown device without a driver (often the network card):".into());
-        }
-        r.manual_block(block);
+        r.advise(d);
     }
     if adapters().is_empty() && still.is_empty() {
         r.manual(
@@ -634,31 +691,37 @@ fn final_stage(r: &mut Report, p: &Probe) {
 }
 
 fn summary(r: &mut Report, p: &Probe) {
-    r.log("\n==================================================");
-    if p.ok() {
-        r.log("  RESULT: FIXED - the internet works.");
+    let (ok, text) = if p.ok() && r.manual.is_empty() {
+        (true, "RESULT: FIXED - the internet works.".to_string())
+    } else if p.ok() {
+        (true, "RESULT: the internet works - see the remaining steps below.".to_string())
     } else if r.restart_needed {
-        r.log("  RESULT: repairs applied, RESTART REQUIRED. Run WinTool again after the restart.");
+        (false, "RESULT: repairs applied - RESTART REQUIRED, then run WinTool again.".to_string())
     } else {
-        r.log("  RESULT: could not be fixed automatically - follow the steps below.");
+        (false, "RESULT: not fixed automatically - follow the steps below.".to_string())
+    };
+    ui::result(ok, &text);
+    r.note("");
+    r.note(text);
+    if r.restart_needed && p.ok() {
+        r.put(Kind::Warn, "Restart the computer to finish the driver installation.");
     }
-    r.log("==================================================");
     let fixed = r.fixed.clone();
     if fixed.is_empty() {
-        r.log("Fixes applied: none");
+        r.put(Kind::Plain, "\n  Fixes applied: none");
     } else {
-        r.log("Fixes applied:");
+        r.put(Kind::Plain, "\n  Fixes applied:");
         for f in fixed {
-            r.log(format!("  + {f}"));
+            r.put(Kind::Plain, format!("    + {f}"));
         }
     }
     let manual = r.manual.clone();
-    if !manual.is_empty() && !p.ok() {
-        r.log("\nWhat you need to do:");
+    if !manual.is_empty() {
+        r.put(Kind::Plain, "\n  What you need to do:");
         for (i, block) in manual.iter().enumerate() {
-            r.log("");
+            r.put(Kind::Plain, "");
             for (j, line) in block.iter().enumerate() {
-                r.log(if j == 0 { format!("  {}. {line}", i + 1) } else { format!("     {line}") });
+                r.put(Kind::Plain, if j == 0 { format!("  {}. {line}", i + 1) } else { format!("     {line}") });
             }
         }
     }

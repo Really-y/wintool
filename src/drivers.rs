@@ -4,6 +4,8 @@
 //! install every .inf from `Drivers\` (next to WinTool.exe) → if a device still has no
 //! driver, tell the user exactly which driver is needed and where to download it.
 
+use crate::online;
+use crate::ui;
 use crate::util::*;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -197,13 +199,7 @@ fn unpack_archives(dir: &Path, log: &mut dyn FnMut(String)) {
             // `expand` ships with every Windows version since XP.
             Command::new("expand").arg("-F:*").arg(&p).arg(&out).output().map(|o| o.status.success()).unwrap_or(false)
         } else {
-            // Shell.Application works on Win7 (PS 2.0 has no Expand-Archive).
-            ps(&format!(
-                "$s=New-Object -ComObject Shell.Application; $s.Namespace({}).CopyHere($s.Namespace({}).Items(), 0x14)",
-                ps_quote(&out.to_string_lossy()),
-                ps_quote(&p.to_string_lossy())
-            ));
-            out.read_dir().map(|mut i| i.next().is_some()).unwrap_or(false)
+            unzip(&p, &out)
         };
         if !ok {
             log("   (unpack failed - try 7-Zip)".into());
@@ -254,40 +250,55 @@ pub fn install_from_folder(log: &mut dyn FnMut(String)) -> (usize, usize) {
 
 // ---------------------------------------------------------------- menu item
 
-/// "Find missing drivers" — all devices, not only network.
+/// "Find missing drivers" — all devices: offline `Drivers` folder → Windows Update →
+/// Snappy Driver Installer → download advice for whatever is left.
 pub fn check_all() {
-    println!("\nScanning devices...");
-    let mut probs = problem_devices(false);
-    if probs.is_empty() {
-        println!("\nAll devices have working drivers.");
-        return;
+    let probs: Vec<ProblemDevice> =
+        ui::spin("Scanning devices", || problem_devices(false)).into_iter().filter(|d| d.code != 22).collect();
+    if !probs.is_empty() {
+        ui::step("[1/3] Offline: hardware rescan and the 'Drivers' folder");
+        if ui::spin("Scanning for hardware changes", rescan_devices) {
+            ui::ok("Hardware rescanned");
+        }
+        let (found, ok) = install_from_folder(&mut |s| ui::info(s.trim()));
+        if found == 0 {
+            ui::info("'Drivers' folder is empty - nothing to install offline.");
+        } else {
+            ui::ok(&format!("{ok} of {found} driver(s) added from the 'Drivers' folder"));
+            ui::spin("Scanning for hardware changes", rescan_devices);
+        }
+        sleep(Duration::from_secs(3));
     }
-    println!("\n{} device(s) with problems found. Trying to fix...", probs.len());
-    if rescan_devices() {
-        println!("   Hardware rescan done.");
+
+    ui::step("[2/3] Online: Windows Update, then Snappy Driver Installer");
+    let (remaining, reboot) = if ui::spin("Checking the internet connection", internet_ok) {
+        let outcome = online::run(&mut |k, s| ui::line(k, &s), true);
+        (outcome.remaining, outcome.reboot)
+    } else {
+        ui::warn("No internet - online search skipped. Fix the network first (main menu -> 1).");
+        (problem_devices(false).into_iter().filter(|d| d.code != 22).collect(), false)
+    };
+
+    ui::step("[3/3] Result");
+    if remaining.is_empty() {
+        ui::result(true, "All devices have working drivers.");
+    } else {
+        let mut lines = vec![format!("WinTool {} - missing drivers ({})", ui::VERSION, version_str()), String::new()];
+        for d in &remaining {
+            lines.extend(advice(d));
+            lines.push(String::new());
+        }
+        ui::result(false, &format!("{} device(s) still need a driver - download links below.", remaining.len()));
+        println!();
+        for l in &lines {
+            println!("  {l}");
+        }
+        for p in save_text("WinTool-missing-drivers.txt", &lines) {
+            ui::ok(&format!("Saved: {}", p.display()));
+        }
     }
-    let (found, ok) = install_from_folder(&mut |s| println!("{s}"));
-    if found > 0 {
-        println!("   {ok} of {found} driver(s) added from the 'Drivers' folder.");
-        rescan_devices();
-    }
-    sleep(Duration::from_secs(5));
-    probs = problem_devices(false);
-    if probs.is_empty() {
-        println!("\nFIXED - all devices now have working drivers.");
-        return;
-    }
-    let mut lines = vec![format!("WinTool - missing drivers ({})", version_str()), String::new()];
-    for d in &probs {
-        lines.extend(advice(d));
-        lines.push(String::new());
-    }
-    println!();
-    for l in &lines {
-        println!("{l}");
-    }
-    for p in save_text("WinTool-missing-drivers.txt", &lines) {
-        println!("Saved: {}", p.display());
+    if reboot {
+        ui::warn("Restart the computer to finish the driver installation.");
     }
 }
 

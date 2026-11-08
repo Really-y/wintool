@@ -21,6 +21,17 @@ Menu-driven repair tool for Windows 7 / 8 / 10 / 11, written in Rust. Single `.e
 | IP / DNS | DHCP (169.254.x.x), gateway, proxy, Winsock / TCP-IP, DNS — step by step, re-testing after every fix. A working corporate proxy is left untouched; only a dead proxy (old VPN / malware leftover) is removed. |
 | Hidden causes | Captive portal (hotel / office Wi-Fi login page) and a wrong clock (HTTPS sites fail) — the clock is corrected from the internet. |
 
+| Other drivers | Once the internet works: **Windows Update** first, then **Snappy Driver Installer Origin** for devices Windows Update has nothing for. Shows the list, asks once, installs, says if a restart is needed. Only devices without a working driver are touched; optional updates for working devices are offered separately (default: no). |
+
+**Safety.** Before the first system change in a session WinTool offers a System Restore point (default: yes), and the
+network report records the previous DNS / proxy settings. Snappy Driver Installer runs in `select missing` mode only
+(never replaces a working driver); it is downloaded to `%ProgramData%\WinTool\SDIO` on the repaired PC and deleted after a
+successful run (kept and reported if something failed). Its driver packs are downloaded via torrent, which some
+corporate firewalls block — WinTool then reports it and moves on (30-minute limit).
+
+**Interface.** Colored terminal UI with arrow-key menus (number keys work too, `Esc` = back), spinners for long tasks,
+and a pixel-art banner. Unicode boxes on Windows 8+, ASCII on the Windows 7 console.
+
 **2. Network repair (manual)** — full reset, DNS flush, IP renew, connection test, DNS servers, proxy reset, Wi-Fi profiles.
 **3. System cleanup** — temp, Windows Update cache, error reports, thumbnail cache, recycle bin (scan first, then confirm), WinSxS.
 **4. System repair** — SFC, DISM, Windows Update reset, Print Spooler reset, icon cache, chkdsk, **find missing drivers for all devices**.
@@ -72,6 +83,17 @@ The Win7 targets (`*-win7-windows-msvc`) are tier 3 in Rust, so they are built w
 | IP / DNS | DHCP (169.254.x.x), gateway, proxy, Winsock / TCP-IP, DNS — addım-addım, hər düzəlişdən sonra yenidən test. İşləyən korporativ proxy-yə toxunmur, yalnız ölü proxy-ni (köhnə VPN / virus qalığı) söndürür. |
 | Gizli səbəblər | Captive portal (hotel / ofis Wi-Fi login səhifəsi) və səhv saat (HTTPS saytları açılmır) — saatı internetdən düzəldir. |
 
+| Digər driverlər | İnternet işləyəndən sonra: əvvəlcə **Windows Update**, onun tapmadığı cihazlar üçün **Snappy Driver Installer Origin**. Siyahını göstərir, bir dəfə soruşur, quraşdırır, restart lazımdırsa deyir. Yalnız driveri işləməyən cihazlara toxunur; işləyən cihazlar üçün optional yeniləmələr ayrıca təklif olunur (default: yox). |
+
+**Təhlükəsizlik.** Sessiyada ilk sistem dəyişikliyindən əvvəl System Restore point təklif edir (default: bəli), şəbəkə
+hesabatına köhnə DNS / proxy ayarları yazılır. Snappy Driver Installer yalnız `select missing` rejimində işləyir (işləyən
+driveri heç vaxt dəyişmir); təmir olunan kompüterdə `%ProgramData%\WinTool\SDIO`-ya endirilir və uğurlu işdən sonra silinir
+(alınmasa saxlanır və hesabatda göstərilir). Driver paketləri torrent ilə endirilir — bəzi korporativ firewall-lar bunu bloklayır,
+o zaman WinTool bunu yazıb davam edir (30 dəqiqə limit).
+
+**İnterfeys.** Rəngli terminal UI, ox düymələri ilə menyu (rəqəmlər də işləyir, `Esc` = geri), uzun işlərdə spinner,
+piksel-art banner. Windows 8+ üçün Unicode çərçivələr, Windows 7 konsolunda ASCII.
+
 **2. Şəbəkə təmiri (əl ilə)** — tam reset, DNS flush, IP yeniləmə, bağlantı testi, DNS serverləri, proxy reset, Wi-Fi profilləri.
 **3. Sistem təmizliyi** — temp, Windows Update cache, xəta hesabatları, thumbnail cache, zibil qutusu (əvvəl skan, sonra təsdiq), WinSxS.
 **4. Sistem təmiri** — SFC, DISM, Windows Update reset, Print Spooler reset, ikon cache, chkdsk, **bütün cihazlar üçün çatışmayan driverləri tapmaq**.
@@ -104,6 +126,17 @@ Build qaydası yuxarıda, English bölməsindədir.
 | Подключение | Не подключён кабель Ethernet? Не подключён Wi-Fi? Пробует сохранённые сети Wi-Fi. |
 | IP / DNS | DHCP (169.254.x.x), шлюз, прокси, Winsock / TCP-IP, DNS — по шагам, с повторной проверкой после каждого исправления. Рабочий корпоративный прокси не трогает, отключает только неработающий (остаток старого VPN / вируса). |
 | Скрытые причины | Captive portal (страница входа в Wi-Fi отеля / офиса) и неверное время (не открываются HTTPS-сайты) — время исправляется по интернету. |
+
+| Остальные драйверы | Когда интернет заработал: сначала **Windows Update**, затем **Snappy Driver Installer Origin** для устройств, для которых в Windows Update ничего нет. Показывает список, один раз спрашивает, устанавливает, сообщает о необходимости перезагрузки. Затрагиваются только устройства без рабочего драйвера; необязательные обновления для рабочих устройств предлагаются отдельно (по умолчанию: нет). |
+
+**Безопасность.** Перед первым изменением системы в сеансе WinTool предлагает создать точку восстановления (по умолчанию: да),
+а в отчёт о сети записываются прежние настройки DNS / прокси. Snappy Driver Installer работает только в режиме `select missing`
+(никогда не заменяет рабочий драйвер); он скачивается в `%ProgramData%\WinTool\SDIO` на ремонтируемом ПК и удаляется после
+успешной работы (при ошибке сохраняется, путь указан в отчёте). Пакеты драйверов качаются через torrent — некоторые
+корпоративные файрволы это блокируют, тогда WinTool сообщает об этом и продолжает (лимит 30 минут).
+
+**Интерфейс.** Цветной интерфейс в терминале, меню стрелками (цифры тоже работают, `Esc` = назад), индикаторы для долгих
+операций, пиксель-арт баннер. Рамки Unicode в Windows 8+, ASCII в консоли Windows 7.
 
 **2. Ремонт сети (вручную)** — полный сброс, очистка DNS, обновление IP, тест подключения, DNS-серверы, сброс прокси, профили Wi-Fi.
 **3. Очистка системы** — temp, кэш Windows Update, отчёты об ошибках, кэш эскизов, корзина (сначала сканирование, затем подтверждение), WinSxS.

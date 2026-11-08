@@ -1,6 +1,8 @@
 //! Shared helpers: running commands, console I/O, Windows version, folder cleanup, PowerShell.
 
+use crate::ui;
 use std::env;
+use std::sync::OnceLock;
 use std::fs;
 use std::io::{self, Write};
 use std::os::windows::process::CommandExt;
@@ -9,13 +11,13 @@ use std::process::{Command, Stdio};
 
 /// Runs a program with arguments; its output goes straight to the console.
 pub fn run(desc: &str, prog: &str, args: &[&str]) -> bool {
-    println!("\n>> {desc}");
+    ui::info(desc);
     report(Command::new(prog).args(args).status())
 }
 
 /// `cmd /C <line>` — the line is passed verbatim (Rust adds no extra quoting).
 pub fn cmd(desc: &str, line: &str) -> bool {
-    println!("\n>> {desc}");
+    ui::info(desc);
     report(Command::new("cmd").arg("/C").raw_arg(line).status())
 }
 
@@ -34,18 +36,49 @@ pub fn cmd_quiet(line: &str) -> bool {
 fn report(r: io::Result<std::process::ExitStatus>) -> bool {
     match r {
         Ok(s) if s.success() => {
-            println!("   [OK]");
+            ui::ok("done");
             true
         }
         Ok(s) => {
-            println!("   [ERROR] exit code: {}", s.code().unwrap_or(-1));
+            ui::fail(&format!("exit code {}", s.code().unwrap_or(-1)));
             false
         }
         Err(e) => {
-            println!("   [ERROR] {e}");
+            ui::fail(&e.to_string());
             false
         }
     }
+}
+
+/// Unpacks a .zip into `out`: `tar` (Windows 10 1803+), else Shell.Application (Windows 7),
+/// waiting until every top-level item has been copied.
+pub fn unzip(zip: &Path, out: &Path) -> bool {
+    let _ = fs::create_dir_all(out);
+    let has_items = || out.read_dir().map(|mut i| i.next().is_some()).unwrap_or(false);
+    let tar = windir().join(r"System32\tar.exe");
+    if tar.is_file() && Command::new(&tar).arg("-xf").arg(zip).arg("-C").arg(out).output().map(|o| o.status.success()).unwrap_or(false) {
+        return has_items();
+    }
+    ps(&format!(
+        "$s = New-Object -ComObject Shell.Application; $src = $s.Namespace({}); $dst = $s.Namespace({})
+         $n = $src.Items().Count; $dst.CopyHere($src.Items(), 0x14)
+         $t = 0; while (($dst.Items().Count -lt $n) -and ($t -lt 600)) {{ Start-Sleep -Milliseconds 500; $t++ }}
+         Start-Sleep -Seconds 2",
+        ps_quote(&zip.to_string_lossy()),
+        ps_quote(&out.to_string_lossy())
+    ));
+    has_items()
+}
+
+/// Quick reachability test (direct TCP to public DNS anycast + name resolution).
+pub fn internet_ok() -> bool {
+    use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+    let tcp = ["1.1.1.1:443", "8.8.8.8:443"].iter().any(|a| {
+        a.parse::<SocketAddr>()
+            .map(|s| TcpStream::connect_timeout(&s, std::time::Duration::from_secs(4)).is_ok())
+            .unwrap_or(false)
+    });
+    tcp && ("www.microsoft.com", 80).to_socket_addrs().map(|mut i| i.next().is_some()).unwrap_or(false)
 }
 
 /// Runs a PowerShell script via -EncodedCommand (no quoting issues; works with PS 2.0 on Win7).
@@ -89,25 +122,24 @@ pub fn prompt(msg: &str) -> String {
     s.trim().to_string()
 }
 
+/// Yes/no question, default "no" (used before destructive actions).
 pub fn confirm(msg: &str) -> bool {
-    matches!(prompt(&format!("{msg} [y/n]: ")).to_lowercase().as_str(), "y" | "yes")
+    ui::ask(msg, false)
 }
 
 pub fn pause() {
-    prompt("\nPress Enter to continue...");
+    prompt("\n  Press Enter to continue...");
 }
 
-pub fn header(title: &str) {
-    let _ = Command::new("cmd").args(["/C", "cls"]).status();
-    println!("==================================================");
-    println!("  WinTool  |  {title}");
-    println!("  {}  |  Admin: {}", version_str(), if is_admin() { "yes" } else { "NO" });
-    println!("==================================================");
+/// Windows version (major, minor, build), detected once.
+pub fn win_version() -> (u32, u32, u32) {
+    static V: OnceLock<(u32, u32, u32)> = OnceLock::new();
+    *V.get_or_init(detect_version)
 }
 
 /// Parses `ver` output (e.g. "Microsoft Windows [Version 6.1.7601]") into major/minor/build.
 /// Only the digits inside the brackets are used, so the display language does not matter.
-pub fn win_version() -> (u32, u32, u32) {
+fn detect_version() -> (u32, u32, u32) {
     let out = Command::new("cmd").args(["/C", "ver"]).output();
     let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
     let inner = text.split('[').nth(1).unwrap_or("");
@@ -143,9 +175,10 @@ pub fn version_str() -> String {
     format!("{name} ({ma}.{mi}.{b})")
 }
 
-/// `net session` only succeeds when elevated.
+/// `net session` only succeeds when elevated. Detected once.
 pub fn is_admin() -> bool {
-    cmd_quiet("net session")
+    static A: OnceLock<bool> = OnceLock::new();
+    *A.get_or_init(|| cmd_quiet("net session"))
 }
 
 pub fn env_path(var: &str, fallback: &str) -> PathBuf {

@@ -1,36 +1,38 @@
 //! System repair: SFC, DISM, Windows Update reset, Print Spooler, icon cache, disk check, drivers.
 
 use crate::drivers;
+use crate::safety;
+use crate::ui;
 use crate::util::*;
 use std::fs;
 use std::path::Path;
 
+const ITEMS: [&str; 8] = [
+    "Check and repair system files (SFC)",
+    "Repair the Windows image (DISM) - Win8+",
+    "FULL repair (DISM + SFC)",
+    "Reset Windows Update (stuck updates)",
+    "Reset the print queue (Print Spooler)",
+    "Rebuild icon & thumbnail cache",
+    "Check disk (chkdsk)",
+    "Find & install missing drivers (all devices)",
+];
+
 pub fn menu() {
-    loop {
-        header("System repair");
-        println!(" 1. Check and repair system files (SFC)");
-        println!(" 2. Repair the Windows image (DISM RestoreHealth) - Win8+");
-        println!(" 3. FULL repair (DISM + SFC)");
-        println!(" 4. Reset Windows Update (when updates are stuck)");
-        println!(" 5. Reset the print queue (Print Spooler)");
-        println!(" 6. Rebuild icon & thumbnail cache (broken icons)");
-        println!(" 7. Check disk (chkdsk)");
-        println!(" 8. Find missing / broken drivers (all devices)");
-        println!(" 0. Back");
-        match prompt("\nChoice: ").as_str() {
-            "1" => sfc(),
-            "2" => dism(),
-            "3" => {
+    while let Some(i) = ui::menu("System repair", &ITEMS, "Back", false) {
+        ui::header(ITEMS[i]);
+        match i {
+            0 => sfc(),
+            1 => dism(),
+            2 => {
                 dism();
                 sfc();
             }
-            "4" => reset_windows_update(),
-            "5" => reset_spooler(),
-            "6" => rebuild_icon_cache(),
-            "7" => check_disk(),
-            "8" => drivers::check_all(),
-            "0" => return,
-            _ => continue,
+            3 => reset_windows_update(),
+            4 => reset_spooler(),
+            5 => rebuild_icon_cache(),
+            6 => check_disk(),
+            _ => drivers::check_all(),
         }
         pause();
     }
@@ -69,6 +71,7 @@ fn reset_windows_update() {
     if !confirm("Continue?") {
         return;
     }
+    safety::checkpoint();
     let services = ["wuauserv", "cryptSvc", "bits", "msiserver"];
     for s in services {
         println!("  stopping service: {s}");
