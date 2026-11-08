@@ -17,6 +17,8 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const AUTHOR: &str = "Yusif Ezizov | AZEDEV";
+pub const SITE: &str = "azedev.com";
 const BOX_W: usize = 62;
 const PANEL_COL: u16 = 27;
 
@@ -216,10 +218,11 @@ fn draw_row(out: &mut impl Write, r: &Row) {
 }
 
 fn draw_menu(title: &str, items: &[&str], back: &str, sel: usize, with_art: bool) {
-    let mut rows = vec![
-        Row::Title(format!("WinTool v{VERSION}  |  {title}")),
-        Row::Dim(status_line()),
-    ];
+    let mut rows = vec![Row::Title(format!("WinTool v{VERSION}  |  {title}"))];
+    if with_art {
+        rows.push(Row::Dim(format!("by {AUTHOR}  -  {SITE}")));
+    }
+    rows.push(Row::Dim(status_line()));
     if !util::is_admin() {
         rows.push(Row::Warn("Not elevated: right-click -> Run as administrator".into()));
     }

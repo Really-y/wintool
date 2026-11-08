@@ -4,6 +4,8 @@
 
 Menu-driven repair tool for Windows 7 / 8 / 10 / 11, written in Rust. Single `.exe`, no installer, no runtime DLLs.
 
+**by Yusif Ezizov | AZEDEV** · [azedev.com](https://azedev.com) · [guns.lol/azizowv](https://guns.lol/azizowv)
+
 ---
 
 ## English
@@ -156,7 +158,16 @@ WinTool распаковывает архивы и устанавливает в
 
 ---
 
+## Author
+
+**Yusif Ezizov | AZEDEV**
+
+- Website: [azedev.com](https://azedev.com)
+- Links: [guns.lol/azizowv](https://guns.lol/azizowv)
+
 ## License
+
+© 2026 Yusif Ezizov | AZEDEV
 
 [CC BY-NC-SA 4.0](LICENSE) — free to use, modify and share with attribution; **no commercial use**; derivatives must use the same license.
 CC BY-NC-SA 4.0 — istifadə, dəyişdirmə və paylaşma müəllifi göstərməklə sərbəstdir; **kommersiya istifadəsi qadağandır**.

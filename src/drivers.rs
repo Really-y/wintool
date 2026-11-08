@@ -283,7 +283,10 @@ pub fn check_all() {
     if remaining.is_empty() {
         ui::result(true, "All devices have working drivers.");
     } else {
-        let mut lines = vec![format!("WinTool {} - missing drivers ({})", ui::VERSION, version_str()), String::new()];
+        let mut lines = vec![
+            format!("WinTool {} - missing drivers ({})  (by {}, {})", ui::VERSION, version_str(), ui::AUTHOR, ui::SITE),
+            String::new(),
+        ];
         for d in &remaining {
             lines.extend(advice(d));
             lines.push(String::new());

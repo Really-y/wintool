@@ -409,7 +409,7 @@ fn now_str() -> String {
 pub fn run() {
     ui::header("No internet - AUTOMATIC diagnose & repair");
     let mut r = Report::new();
-    r.note(format!("WinTool {} - network report", ui::VERSION));
+    r.note(format!("WinTool {} - network report  (by {}, {})", ui::VERSION, ui::AUTHOR, ui::SITE));
     r.put(Kind::Plain, format!("  Date:   {}", now_str()));
     r.put(Kind::Plain, format!("  System: {}", version_str()));
 
