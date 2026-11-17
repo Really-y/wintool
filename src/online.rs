@@ -7,8 +7,9 @@
 //! - Windows Update optional updates for working devices are offered separately (default: no);
 //! - SDIO runs in `select missing` mode only, so it never replaces a working driver
 //!   (64-bit Windows refuses unsigned kernel drivers on its own);
-//! - SDIO and its driver packs live in %ProgramData%\WinTool\SDIO on the repaired PC and are
-//!   deleted after a successful run; after a failed run they are kept and reported.
+//! - SDIO and its driver packs live in the admin's %TEMP%\WinTool-SDIO (not %ProgramData%,
+//!   where any user can plant an exe that WinTool would run as admin); deleted after a
+//!   successful run, kept and reported after a failed one.
 
 use crate::catalog::{self, Package};
 use crate::drivers::{self, ProblemDevice};
@@ -141,8 +142,14 @@ fn same_device(dev_hwid: &str, upd_hwid: &str) -> bool {
 
 // ---------------------------------------------------------------- SDIO
 
+/// The admin's own temp folder: other users cannot write there. When TEMP is the shared
+/// Windows\Temp (WinTool run as SYSTEM), leftovers are not trusted and get wiped first.
 fn sdio_dir() -> PathBuf {
-    env_path("ProgramData", r"C:\ProgramData").join(r"WinTool\SDIO")
+    let base = std::env::temp_dir().join("WinTool-SDIO");
+    if base.starts_with(windir()) {
+        let _ = fs::remove_dir_all(&base);
+    }
+    base
 }
 
 /// Newest SDIO_<arch>R<nnn>.exe in `dir` (XP builds excluded).
@@ -244,7 +251,7 @@ fn copy_dir(src: &Path, dst: &Path) -> bool {
     })
 }
 
-/// Makes SDIO available in %ProgramData%\WinTool\SDIO. Silent (runs under a spinner).
+/// Makes SDIO available in %TEMP%\WinTool-SDIO. Silent (runs under a spinner).
 /// Sources: already there → `SDIO` folder next to WinTool.exe → download from the official site.
 fn prepare_sdio(base: &Path) -> Result<PathBuf, String> {
     if let Some(exe) = find_sdio_exe(base) {
@@ -360,9 +367,6 @@ fn sdio_flow(log: Log, targets: &[String], out: &mut Outcome) {
     }
     if left.is_empty() && matches!(run, SdioRun::Done) {
         let _ = fs::remove_dir_all(&base);
-        if let Some(parent) = base.parent() {
-            let _ = fs::remove_dir(parent); // only succeeds when empty
-        }
         log(Kind::Ok, "Temporary SDIO files removed.".into());
     } else if base.is_dir() {
         log(Kind::Warn, format!("SDIO files kept for a retry: {}", base.display()));
