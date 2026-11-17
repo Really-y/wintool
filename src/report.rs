@@ -9,12 +9,14 @@ pub struct Report {
     pub fixed: Vec<String>,
     pub manual: Vec<Vec<String>>,
     advised: Vec<String>,
+    /// Hardware problems software cannot fix: red on screen, at the very top of the report file.
+    pub alerts: Vec<String>,
     pub restart_needed: bool,
 }
 
 impl Report {
     pub fn new() -> Self {
-        Self { lines: vec![], fixed: vec![], manual: vec![], advised: vec![], restart_needed: false }
+        Self { lines: vec![], fixed: vec![], manual: vec![], advised: vec![], alerts: vec![], restart_needed: false }
     }
     /// Colored line on screen, plain line in the report file.
     pub fn put(&mut self, kind: Kind, s: impl Into<String>) {
@@ -42,6 +44,12 @@ impl Report {
         self.put(Kind::Ok, s.clone());
         self.fixed.push(s);
     }
+    /// Hardware warning (shown in red now, repeated first in the summary and the report file).
+    pub fn alert(&mut self, s: impl Into<String>) {
+        let s = s.into();
+        self.put(Kind::Fail, format!("HARDWARE: {s}"));
+        self.alerts.push(s);
+    }
     pub fn manual(&mut self, s: impl Into<String>) {
         self.manual.push(vec![s.into()]);
     }
@@ -63,6 +71,13 @@ impl Report {
 
     /// Prints (and records) the applied fixes and the numbered manual steps.
     pub fn print_steps(&mut self) {
+        let alerts = self.alerts.clone();
+        if !alerts.is_empty() {
+            self.put(Kind::Fail, "\n  !!! HARDWARE WARNINGS - software cannot fix these !!!");
+            for a in alerts {
+                self.put(Kind::Fail, format!("    ! {a}"));
+            }
+        }
         let fixed = self.fixed.clone();
         if fixed.is_empty() {
             self.put(Kind::Plain, "\n  Fixes applied: none");
@@ -86,7 +101,14 @@ impl Report {
 
     /// Saves the report to the Desktop and next to WinTool.exe.
     pub fn save(&self, name: &str) {
-        for f in drivers::save_text(name, &self.lines) {
+        let mut out = vec![];
+        if !self.alerts.is_empty() {
+            out.push("!!! HARDWARE WARNINGS - software cannot fix these !!!".to_string());
+            out.extend(self.alerts.iter().map(|a| format!("  ! {a}")));
+            out.push(String::new());
+        }
+        out.extend(self.lines.iter().cloned());
+        for f in drivers::save_text(name, &out) {
             ui::ok(&format!("Report saved: {}", f.display()));
         }
     }

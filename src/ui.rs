@@ -369,10 +369,23 @@ pub fn spin<T: Send>(msg: &str, work: impl FnOnce() -> T + Send) -> T {
 
 // ---------------------------------------------------------------- prompts
 
+static UNATTENDED: AtomicBool = AtomicBool::new(false);
+
+/// Unattended mode (FULL CHECK): every `ask` takes its default answer without waiting.
+pub fn set_unattended(on: bool) {
+    UNATTENDED.store(on, Ordering::SeqCst);
+}
+
 /// Yes/no question with a default answer (Enter = default).
 pub fn ask(question: &str, default_yes: bool) -> bool {
     let hint = if default_yes { "[Y/n]" } else { "[y/N]" };
     let mut out = stdout();
+    if UNATTENDED.load(Ordering::SeqCst) {
+        let answer = if default_yes { "yes" } else { "no" };
+        let _ = queue!(out, SetForegroundColor(Color::DarkGrey), Print(format!("\n  ? {question} -> {answer} (automatic)\n")), ResetColor);
+        let _ = out.flush();
+        return default_yes;
+    }
     let _ = queue!(out, SetForegroundColor(Color::Yellow), Print(format!("\n  ? {question} {hint}: ")), ResetColor);
     let _ = out.flush();
     let mut s = String::new();

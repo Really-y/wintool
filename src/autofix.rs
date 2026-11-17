@@ -406,6 +406,23 @@ pub fn run() {
     }
 }
 
+/// Network part of FULL CHECK: tests the connection, repairs it when it fails, fixes the clock.
+/// Returns whether the internet works afterwards.
+pub fn repair_into(r: &mut Report) -> bool {
+    let mut p = ui::spin("Testing the connection", probe);
+    show(r, &p);
+    if !p.ok() {
+        record_settings(r);
+        driver_stage(r);
+        link_stage(r);
+        p = network_stage(r);
+    }
+    final_stage(r, &p);
+    let p = ui::spin("Re-testing", probe);
+    show(r, &p);
+    p.ok()
+}
+
 fn driver_stage(r: &mut Report) {
     let ads = adapters();
     let probs = drivers::problem_devices(true);

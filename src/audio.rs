@@ -487,6 +487,13 @@ pub fn run() {
     }
 }
 
+/// Sound part of FULL CHECK: services, playback devices, mute and volume (no test tone;
+/// sound devices are handled with all other devices).
+pub fn quick(r: &mut Report) {
+    services_stage(r);
+    endpoints_stage(r);
+}
+
 fn devices_stage(r: &mut Report) {
     let devs = ui::spin("Scanning sound devices", sound_devices);
     if devs.is_empty() {

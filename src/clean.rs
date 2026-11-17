@@ -1,6 +1,7 @@
 //! System cleanup: temp files (every user), Windows Update and Delivery Optimization caches,
 //! error reports, thumbnail cache, recycle bins of all fixed drives.
 
+use crate::report::Report;
 use crate::ui;
 use crate::util::*;
 use std::fs;
@@ -209,6 +210,27 @@ fn clean(t: &Target) -> (u64, u32) {
         cmd_quiet(&format!("net start {s}"));
     }
     (freed, skipped)
+}
+
+/// Cleanup part of FULL CHECK, without questions. The Recycle Bin is emptied only when the
+/// system drive is low on space - it may hold files the user still wants.
+pub fn auto(r: &mut Report, include_recycle_bin: bool) -> u64 {
+    let ts = ui::spin("Looking for user profiles and drives", targets);
+    let mut freed = 0;
+    for t in ts.iter().filter(|t| include_recycle_bin || !matches!(t.kind, Kind::RecycleBin)) {
+        if size_of(t) == 0 {
+            continue;
+        }
+        let (f, k) = ui::spin(&format!("Cleaning: {}", t.name), || clean(t));
+        let skipped = if k > 0 { format!(" ({k} in use, skipped)") } else { String::new() };
+        if f > 0 {
+            r.fix(format!("{}: {} freed{skipped}", t.name, human(f)));
+        } else {
+            r.log(format!("   {}: nothing removed{skipped}", t.name));
+        }
+        freed += f;
+    }
+    freed
 }
 
 fn quick_clean() {
