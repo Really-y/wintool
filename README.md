@@ -16,7 +16,17 @@ Menu-driven repair tool for Windows 7 / 8 / 10 / 11, written in Rust. Single `.e
 
 ### What it does
 
-**1. No internet — automatic diagnose & repair.** Finds where the problem is, fixes it, and writes a report
+**1. FULL CHECK — find & fix everything (unattended, beta).** One run, no questions, 20-60 minutes.
+Report: `WinTool-full-report.txt`, hardware warnings at the very top. A restore point is created first.
+
+| Area | What it checks and fixes |
+|---|---|
+| Hardware | Failing disks (SMART / disk health), disk read errors, nearly full system drive, blue screens (code + likely cause), sudden shutdowns, CPU / RAM errors (WHEA), worn battery, damaged user profiles, programs that keep crashing. Hardware cannot be fixed by software: red warnings, and a suspected RAM fault offers Windows Memory Diagnostic. |
+| Hidden problems | Blocked Task Manager / Registry Editor / Control Panel, hijacked programs (IFEO), changed Winlogon shell / Userinit, AppInit DLLs, hijacked `hosts` file (backed up, bad lines only commented out), dead proxies, Defender switched off by policy or blinded by exclusions, firewall / UAC off, startup entries of deleted programs. |
+| Services & settings | Disabled vital Windows services, page file off, pending restarts. |
+| Everything else | Internet, all devices and drivers, sound, virus scan (below), junk files, DISM + SFC. |
+
+**2. No internet — automatic diagnose & repair.** Finds where the problem is, fixes it, and writes a report
 (on screen, on the Desktop and next to the `.exe`: `WinTool-network-report.txt`).
 
 | Step | What it checks and fixes |
@@ -38,7 +48,7 @@ corporate firewalls block — WinTool then reports it and moves on (30-minute li
 **Interface.** Colored terminal UI with arrow-key menus (number keys work too, `Esc` = back), spinners for long tasks,
 and a pixel-art banner. Unicode boxes on Windows 8+, ASCII on the Windows 7 console.
 
-**2. No sound — automatic diagnose & repair** (report: `WinTool-sound-report.txt`).
+**3. No sound — automatic diagnose & repair** (report: `WinTool-sound-report.txt`).
 
 > **Beta:** new in 0.3.0 and not yet tested on real hardware. If it misbehaves, please open an issue and attach the report.
 
@@ -49,9 +59,24 @@ and a pixel-art banner. Unicode boxes on Windows 8+, ASCII on the Windows 7 cons
 | Playback devices | Enables disabled outputs, detects "nothing plugged into the jack", unmutes and raises a volume below 10 % to 50 %. |
 | Test tone | Plays a tone and asks whether you heard it. If not: tries the other outputs (monitor / HDMI, headset), restarts the audio stack, and on Windows 10 2004+ reinstalls the sound driver. |
 
-**3. Network repair (manual)** — full reset, DNS flush, IP renew, connection test, DNS servers, proxy reset, Wi-Fi profiles.
-**4. System cleanup** — temp, Windows Update cache, error reports, thumbnail cache, recycle bin (scan first, then confirm), WinSxS.
-**5. System repair** — SFC, DISM, Windows Update reset, Print Spooler reset, icon cache, chkdsk, **find missing drivers for all devices**.
+**4. Virus scan — WinTool scanner + Windows Defender** (report: `WinTool-virus-report.txt`). A small LOKI-style IOC scanner
+written in Rust, next to Defender.
+
+| | |
+|---|---|
+| Where | Running programs, services, drivers, Run / RunOnce, scheduled tasks, Startup folders, Temp / AppData / Downloads / Desktop / ProgramData / Public. |
+| How | SHA-256 against ~160 000 known malware hashes, file-name IOCs, connections to botnet servers, and behaviour rules: Windows process names outside the Windows folder, double extensions (`invoice.pdf.exe`), encoded / downloading PowerShell, mshta / regsvr32 / rundll32 / certutil tricks, unsigned programs starting from Temp. |
+| Action | Stops the process, disables its startup entries, moves the file to an admin-only quarantine (restorable from the menu). Signed files and files inside the Windows folder are never quarantined. Then: Defender definitions update + quick scan. |
+| Offline | The databases are saved to `WinTool-db` next to the `.exe`, so the scan also works offline from a USB stick. |
+
+**5. App installer** — 26 popular programs (browsers, 7-Zip, VLC, PDF, LibreOffice, codecs, Telegram, WhatsApp, Zoom,
+AnyDesk, TeamViewer, Steam, VC++ / .NET / DirectX runtimes …) in one go. Windows 10 / 11: `winget`; Windows 7 and PCs
+without winget: official direct downloads (only programs that still support that Windows). A downloaded installer runs
+only with a valid digital signature.
+
+**6. Network repair (manual)** — full reset, DNS flush, IP renew, connection test, DNS servers, proxy reset, Wi-Fi profiles.
+**7. System cleanup** — temp of every user, Windows Update and Delivery Optimization caches, error reports, thumbnail cache, recycle bins of all drives (scan first, then confirm), WinSxS.
+**8. System repair** — SFC, DISM, Windows Update reset, Print Spooler reset, icon cache, chkdsk, **find missing drivers for all devices**.
 
 ### Offline drivers (`Drivers` folder)
 
@@ -89,7 +114,17 @@ The Win7 targets (`*-win7-windows-msvc`) are tier 3 in Rust, so they are built w
 
 ### Nə edir
 
-**1. İnternet işləmir — avtomatik tap və həll et.** Problemin harada olduğunu özü tapır, düzəldir və hesabat yazır
+**1. FULL CHECK — hər şeyi tap və düzəlt (sualsız, beta).** Bir dəfə işə salınır, heç nə soruşmur, 20-60 dəqiqə.
+Hesabat: `WinTool-full-report.txt`, hardware xəbərdarlıqları ən yuxarıda. Əvvəlcə bərpa nöqtəsi yaradılır.
+
+| Sahə | Nəyi yoxlayır və düzəldir |
+|---|---|
+| Hardware | Xarab olmağa başlayan disklər (SMART / disk sağlamlığı), disk oxuma xətaları, dolmuş sistem diski, mavi ekranlar (kod + ehtimal olunan səbəb), gözlənilməz söndürülmələr, CPU / RAM xətaları (WHEA), köhnəlmiş batareya, xarab istifadəçi profili, tez-tez çökən proqramlar. Hardware-i proqram düzəldə bilməz: qırmızı xəbərdarlıq; RAM şübhəsində Windows Memory Diagnostic təklif olunur. |
+| Gizli problemlər | Bloklanmış Task Manager / Registry Editor / Control Panel, ələ keçirilmiş proqramlar (IFEO), dəyişdirilmiş Winlogon shell / Userinit, AppInit DLL-lər, `hosts` faylı (ehtiyat nüsxə, pis sətirlər yalnız şərhə çevrilir), ölü proxy-lər, siyasətlə söndürülmüş və ya istisnalarla "kor edilmiş" Defender, söndürülmüş firewall / UAC, silinmiş proqramların startup yazıları. |
+| Servislər və ayarlar | Söndürülmüş vacib Windows servisləri, söndürülmüş pagefile, gözləyən restartlar. |
+| Qalan hər şey | İnternet, bütün cihazlar və driverlər, səs, virus skanı (aşağıda), lazımsız fayllar, DISM + SFC. |
+
+**2. İnternet işləmir — avtomatik tap və həll et.** Problemin harada olduğunu özü tapır, düzəldir və hesabat yazır
 (ekranda, Desktop-da və `.exe`-nin yanında: `WinTool-network-report.txt`).
 
 | Addım | Nəyi yoxlayır və düzəldir |
@@ -111,7 +146,7 @@ o zaman WinTool bunu yazıb davam edir (30 dəqiqə limit).
 **İnterfeys.** Rəngli terminal UI, ox düymələri ilə menyu (rəqəmlər də işləyir, `Esc` = geri), uzun işlərdə spinner,
 piksel-art banner. Windows 8+ üçün Unicode çərçivələr, Windows 7 konsolunda ASCII.
 
-**2. Səs yoxdur — avtomatik tap və həll et** (hesabat: `WinTool-sound-report.txt`).
+**3. Səs yoxdur — avtomatik tap və həll et** (hesabat: `WinTool-sound-report.txt`).
 
 > **Beta:** 0.3.0-da yenidir, hələ real kompüterlərdə test edilməyib. Problem olsa, issue açın və hesabatı əlavə edin.
 
@@ -122,9 +157,24 @@ piksel-art banner. Windows 8+ üçün Unicode çərçivələr, Windows 7 konsolu
 | Səs çıxışları | Söndürülmüş çıxışları yandırır, "jack-a heç nə qoşulmayıb" halını tapır, səsi açır (mute), 10 %-dən aşağı səsi 50 %-ə qaldırır. |
 | Test səsi | Səs çalır və eşidib-eşitmədiyini soruşur. Eşitməsən: digər çıxışları sınayır (monitor / HDMI, qulaqlıq), audio sistemini yenidən başladır, Windows 10 2004+ üzərində səs driverini yenidən quraşdırır. |
 
-**3. Şəbəkə təmiri (əl ilə)** — tam reset, DNS flush, IP yeniləmə, bağlantı testi, DNS serverləri, proxy reset, Wi-Fi profilləri.
-**4. Sistem təmizliyi** — temp, Windows Update cache, xəta hesabatları, thumbnail cache, zibil qutusu (əvvəl skan, sonra təsdiq), WinSxS.
-**5. Sistem təmiri** — SFC, DISM, Windows Update reset, Print Spooler reset, ikon cache, chkdsk, **bütün cihazlar üçün çatışmayan driverləri tapmaq**.
+**4. Virus skanı — WinTool skaneri + Windows Defender** (hesabat: `WinTool-virus-report.txt`). Rust-da yazılmış kiçik,
+LOKI üslubunda IOC skaneri, Defender ilə birlikdə.
+
+| | |
+|---|---|
+| Harada | İşləyən proqramlar, servislər, driverlər, Run / RunOnce, planlaşdırılmış tapşırıqlar, Startup qovluqları, Temp / AppData / Downloads / Desktop / ProgramData / Public. |
+| Necə | ~160 000 məlum virus hash-ı ilə SHA-256 müqayisəsi, fayl adı IOC-ları, botnet serverlərinə bağlantılar və davranış qaydaları: Windows qovluğundan kənarda Windows proses adları, ikiqat uzantı (`qaime.pdf.exe`), şifrələnmiş / endirən PowerShell, mshta / regsvr32 / rundll32 / certutil fəndləri, Temp-dən başlayan imzasız proqramlar. |
+| Nə edir | Prosesi dayandırır, startup yazılarını söndürür, faylı yalnız adminlərin açabildiyi karantinə köçürür (menyudan geri qaytarmaq olar). İmzalı fayllara və Windows qovluğundakı fayllara toxunmur. Sonra: Defender bazası yenilənir + sürətli skan. |
+| Offline | Bazalar `.exe`-nin yanındakı `WinTool-db` qovluğuna saxlanılır — USB fləşkadan internetsiz də işləyir. |
+
+**5. Proqram quraşdırıcı** — 26 məşhur proqram (brauzerlər, 7-Zip, VLC, PDF, LibreOffice, kodeklər, Telegram, WhatsApp, Zoom,
+AnyDesk, TeamViewer, Steam, VC++ / .NET / DirectX …) bir dəfəyə. Windows 10 / 11: `winget`; Windows 7 və winget olmayan
+kompüterlər: rəsmi saytdan birbaşa (yalnız həmin Windows-u dəstəkləyən proqramlar). Endirilən quraşdırıcı yalnız etibarlı
+rəqəmsal imza ilə işə salınır.
+
+**6. Şəbəkə təmiri (əl ilə)** — tam reset, DNS flush, IP yeniləmə, bağlantı testi, DNS serverləri, proxy reset, Wi-Fi profilləri.
+**7. Sistem təmizliyi** — bütün istifadəçilərin temp-i, Windows Update və Delivery Optimization cache, xəta hesabatları, thumbnail cache, bütün disklərin zibil qutusu (əvvəl skan, sonra təsdiq), WinSxS.
+**8. Sistem təmiri** — SFC, DISM, Windows Update reset, Print Spooler reset, ikon cache, chkdsk, **bütün cihazlar üçün çatışmayan driverləri tapmaq**.
 
 ### Offline driverlər (`Drivers` qovluğu)
 
@@ -144,7 +194,17 @@ Build qaydası yuxarıda, English bölməsindədir.
 
 ### Что умеет
 
-**1. Нет интернета — автоматическая диагностика и ремонт.** Сам находит причину, исправляет её и пишет отчёт
+**1. FULL CHECK — найти и исправить всё (без вопросов, бета).** Один запуск, ничего не спрашивает, 20-60 минут.
+Отчёт: `WinTool-full-report.txt`, предупреждения об оборудовании в самом начале. Сначала создаётся точка восстановления.
+
+| Область | Что проверяет и исправляет |
+|---|---|
+| Оборудование | Отказывающие диски (SMART / состояние диска), ошибки чтения, заполненный системный диск, синие экраны (код + вероятная причина), внезапные выключения, ошибки CPU / RAM (WHEA), изношенная батарея, повреждённые профили, постоянно падающие программы. Оборудование программой не починить: красные предупреждения; при подозрении на RAM предлагается Windows Memory Diagnostic. |
+| Скрытые проблемы | Заблокированные диспетчер задач / редактор реестра / панель управления, перехваченные программы (IFEO), изменённые Winlogon shell / Userinit, AppInit DLL, файл `hosts` (резервная копия, плохие строки только комментируются), мёртвые прокси, Defender, отключённый политикой или «ослеплённый» исключениями, выключенные брандмауэр / UAC, автозапуск удалённых программ. |
+| Службы и настройки | Отключённые важные службы Windows, отключённый файл подкачки, ожидающие перезагрузки. |
+| Всё остальное | Интернет, все устройства и драйверы, звук, проверка на вирусы (ниже), мусорные файлы, DISM + SFC. |
+
+**2. Нет интернета — автоматическая диагностика и ремонт.** Сам находит причину, исправляет её и пишет отчёт
 (на экране, на рабочем столе и рядом с `.exe`: `WinTool-network-report.txt`).
 
 | Шаг | Что проверяет и исправляет |
@@ -166,7 +226,7 @@ Build qaydası yuxarıda, English bölməsindədir.
 **Интерфейс.** Цветной интерфейс в терминале, меню стрелками (цифры тоже работают, `Esc` = назад), индикаторы для долгих
 операций, пиксель-арт баннер. Рамки Unicode в Windows 8+, ASCII в консоли Windows 7.
 
-**2. Нет звука — автоматическая диагностика и ремонт** (отчёт: `WinTool-sound-report.txt`).
+**3. Нет звука — автоматическая диагностика и ремонт** (отчёт: `WinTool-sound-report.txt`).
 
 > **Бета:** новое в 0.3.0, ещё не проверено на реальном железе. Если что-то не так, откройте issue и приложите отчёт.
 
@@ -177,9 +237,24 @@ Build qaydası yuxarıda, English bölməsindədir.
 | Устройства вывода | Включает отключённые выходы, определяет «в разъём ничего не вставлено», снимает Mute и поднимает громкость ниже 10 % до 50 %. |
 | Тестовый звук | Проигрывает сигнал и спрашивает, слышно ли его. Если нет: пробует другие выходы (монитор / HDMI, гарнитура), перезапускает аудиосистему, а в Windows 10 2004+ переустанавливает звуковой драйвер. |
 
-**3. Ремонт сети (вручную)** — полный сброс, очистка DNS, обновление IP, тест подключения, DNS-серверы, сброс прокси, профили Wi-Fi.
-**4. Очистка системы** — temp, кэш Windows Update, отчёты об ошибках, кэш эскизов, корзина (сначала сканирование, затем подтверждение), WinSxS.
-**5. Ремонт системы** — SFC, DISM, сброс Windows Update, сброс диспетчера печати, кэш значков, chkdsk, **поиск недостающих драйверов для всех устройств**.
+**4. Проверка на вирусы — сканер WinTool + Windows Defender** (отчёт: `WinTool-virus-report.txt`). Небольшой IOC-сканер
+в стиле LOKI, написанный на Rust, работает вместе с Defender.
+
+| | |
+|---|---|
+| Где | Запущенные программы, службы, драйверы, Run / RunOnce, задания планировщика, папки автозагрузки, Temp / AppData / Downloads / Desktop / ProgramData / Public. |
+| Как | SHA-256 против ~160 000 известных хешей вредоносных программ, IOC по именам файлов, подключения к серверам ботнетов и поведенческие правила: имена системных процессов вне папки Windows, двойные расширения (`schet.pdf.exe`), закодированный / скачивающий PowerShell, трюки mshta / regsvr32 / rundll32 / certutil, неподписанные программы, стартующие из Temp. |
+| Действие | Останавливает процесс, отключает автозапуск, переносит файл в карантин, доступный только администраторам (можно восстановить из меню). Подписанные файлы и файлы в папке Windows в карантин не попадают. Затем: обновление баз Defender + быстрая проверка. |
+| Офлайн | Базы сохраняются в `WinTool-db` рядом с `.exe` — проверка работает и без интернета с флешки. |
+
+**5. Установка программ** — 26 популярных программ (браузеры, 7-Zip, VLC, PDF, LibreOffice, кодеки, Telegram, WhatsApp, Zoom,
+AnyDesk, TeamViewer, Steam, VC++ / .NET / DirectX …) за один раз. Windows 10 / 11: `winget`; Windows 7 и ПК без winget:
+официальные прямые загрузки (только программы, которые ещё поддерживают эту Windows). Скачанный установщик запускается
+только с действительной цифровой подписью.
+
+**6. Ремонт сети (вручную)** — полный сброс, очистка DNS, обновление IP, тест подключения, DNS-серверы, сброс прокси, профили Wi-Fi.
+**7. Очистка системы** — temp всех пользователей, кэш Windows Update и Delivery Optimization, отчёты об ошибках, кэш эскизов, корзины всех дисков (сначала сканирование, затем подтверждение), WinSxS.
+**8. Ремонт системы** — SFC, DISM, сброс Windows Update, сброс диспетчера печати, кэш значков, chkdsk, **поиск недостающих драйверов для всех устройств**.
 
 ### Офлайн-драйверы (папка `Drivers`)
 
@@ -201,6 +276,15 @@ WinTool распаковывает архивы и устанавливает в
 
 - Website: [azedev.com](https://azedev.com)
 - Links: [guns.lol/azizowv](https://guns.lol/azizowv)
+
+## Third-party data
+
+The virus scanner downloads these lists at run time (nothing is bundled in the `.exe`):
+
+- [romainmarcoux/malicious-hash](https://github.com/romainmarcoux/malicious-hash) — malware SHA-256 hashes, MIT License.
+- [Neo23x0/signature-base](https://github.com/Neo23x0/signature-base) (Florian Roth) — hash, file-name and C2 IOCs,
+  [Detection Rule License 1.1](https://github.com/Neo23x0/signature-base/blob/master/LICENSE); matches name the source.
+- [abuse.ch Feodo Tracker](https://feodotracker.abuse.ch/) — botnet C2 IP blocklist.
 
 ## License
 

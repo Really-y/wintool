@@ -1,8 +1,8 @@
 [package]
 name = "wintool"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
-description = "Menu-driven repair tool for Windows 7-11: automatic network and sound repair, drivers, cleanup, system repair"
+description = "Menu-driven repair tool for Windows 7-11: unattended full check, network and sound repair, virus scan, app installer, drivers, cleanup, system repair"
 authors = ["Yusif Ezizov | AZEDEV"]
 license = "CC-BY-NC-SA-4.0"
 homepage = "https://azedev.com"
