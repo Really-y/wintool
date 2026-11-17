@@ -283,7 +283,7 @@ fn load_db(internet: bool) -> (Db, String) {
 const PROBE: &str = r#"$ErrorActionPreference = 'SilentlyContinue'
 try { [Console]::OutputEncoding = New-Object Text.UTF8Encoding $false } catch {}
 function O { $f = @(); for ($i = 1; $i -lt $args.Count; $i++) { $f += (([string]$args[$i]) -replace '[\r\n|]', ' ') }; Write-Output ([string]$args[0] + '|' + ($f -join '|')) }
-Get-WmiObject Win32_Process | ForEach-Object { if ($_.ExecutablePath) { O 'PROC' ($_.ProcessId) ($_.ExecutablePath) } }
+Get-WmiObject Win32_Process | ForEach-Object { if ($_.ExecutablePath) { O 'PROC' ($_.ProcessId) ($_.ExecutablePath) ($_.CommandLine) } }
 Get-WmiObject Win32_Service | ForEach-Object { O 'SVC' ($_.Name) ($_.PathName) }
 Get-WmiObject Win32_SystemDriver | ForEach-Object { O 'DRV' ($_.Name) ($_.PathName) }
 $users = @(Get-ChildItem 'Registry::HKEY_USERS' | Where-Object { $_.PSChildName -match '^S-1-5-21-[0-9-]+$' } | ForEach-Object { 'HKEY_USERS\' + $_.PSChildName })
@@ -307,6 +307,8 @@ O 'DONE'
 
 struct Facts {
     procs: Vec<(u32, String)>,
+    /// (pid, lowercase command line) - finds wscript / cscript running a malicious script.
+    cmdlines: Vec<(u32, String)>,
     autostart: Vec<Autostart>,
     dns: Vec<String>,
 }
@@ -323,7 +325,7 @@ struct Autostart {
 }
 
 fn parse_facts(out: &str) -> Facts {
-    let mut f = Facts { procs: vec![], autostart: vec![], dns: vec![] };
+    let mut f = Facts { procs: vec![], cmdlines: vec![], autostart: vec![], dns: vec![] };
     for l in out.lines().map(|l| l.trim().trim_start_matches('\u{feff}')) {
         let v: Vec<&str> = l.split('|').collect();
         let get = |i: usize| v.get(i).copied().unwrap_or("").trim().to_string();
@@ -331,6 +333,7 @@ fn parse_facts(out: &str) -> Facts {
             "PROC" => {
                 if let Ok(pid) = get(1).parse() {
                     f.procs.push((pid, get(2)));
+                    f.cmdlines.push((pid, get(3).to_lowercase()));
                 }
             }
             "SVC" => f.autostart.push(Autostart { kind: "SVC", key: get(1), name: String::new(), command: get(2) }),
@@ -470,10 +473,38 @@ fn command_findings(cmd: &str) -> Vec<(u32, String)> {
     if has("certutil") && (has("-urlcache") || has("/urlcache") || has("-decode")) {
         v.push((80, "certutil used to download / decode files".to_string()));
     }
-    if (has("wscript") || has("cscript")) && (has("\\appdata\\") || has("\\temp\\") || has("\\programdata\\")) {
-        v.push((70, "runs a script from a user / temp folder".to_string()));
+    if let Some(script) = script_in(cmd) {
+        let l = script.to_lowercase();
+        if l.ends_with(".vbe") || l.ends_with(".jse") {
+            v.push((MALWARE, "starts an encoded script (.vbe / .jse) - typical USB worm / malware".to_string()));
+        } else if user_folder(&l) {
+            v.push((80, "starts a script from a user / temp folder".to_string()));
+        }
     }
     v
+}
+
+/// Script file a command line starts: `wscript.exe //B "C:\Users\x\AppData\Roaming\a.vbs"`.
+fn script_in(cmd: &str) -> Option<String> {
+    let re = Regex::new(r#"(?i)[a-z]:\\[^"<>|*?\r\n]*?\.(?:vbe|vbs|jse|js|wsf|wsh|hta)\b"#).ok()?;
+    re.find(cmd).map(|m| m.as_str().to_string())
+}
+
+/// Lowercase path inside a folder any user (or malware) can write to.
+fn user_folder(p: &str) -> bool {
+    ["\\appdata\\", "\\temp\\", "\\programdata\\", "\\users\\public\\"].iter().any(|d| p.contains(d))
+}
+
+/// A script encoded with the Microsoft Script Encoder (`#@~^` marker): legitimate software
+/// practically never does this, script malware (USB worms) does.
+fn encoded_script(p: &Path) -> bool {
+    let name = p.to_string_lossy().to_lowercase();
+    if !SCRIPT_EXT.iter().any(|e| name.ends_with(&format!(".{e}"))) {
+        return false;
+    }
+    let mut buf = vec![0u8; 4096];
+    let n = fs::File::open(p).and_then(|mut f| f.read(&mut buf)).unwrap_or(0);
+    buf[..n].windows(4).any(|w| w == b"#@~^")
 }
 
 /// Score for an autostart program that lives in a user-writable folder (counts only when the
@@ -622,6 +653,28 @@ fn prepare_quarantine() -> Option<PathBuf> {
 #[link(name = "kernel32")]
 extern "system" {
     fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
+    fn GetFileAttributesW(path: *const u16) -> u32;
+    fn SetFileAttributesW(path: *const u16, attrs: u32) -> i32;
+    fn GetLogicalDrives() -> u32;
+    fn GetDriveTypeW(root: *const u16) -> u32;
+}
+
+const FILE_ATTRIBUTE_READONLY: u32 = 1;
+const FILE_ATTRIBUTE_HIDDEN: u32 = 2;
+const FILE_ATTRIBUTE_SYSTEM: u32 = 4;
+const INVALID_FILE_ATTRIBUTES: u32 = u32::MAX;
+
+fn wide(p: &Path) -> Vec<u16> {
+    p.to_string_lossy().encode_utf16().chain(Some(0)).collect()
+}
+
+/// Deletes a file even when it is read-only / hidden / system (USB worms set all three).
+fn remove_forced(p: &Path) -> bool {
+    fs::remove_file(p).is_ok() || {
+        let w = wide(p);
+        unsafe { SetFileAttributesW(w.as_ptr(), 0x80) }; // FILE_ATTRIBUTE_NORMAL
+        fs::remove_file(p).is_ok()
+    }
 }
 
 const MOVEFILE_DELAY_UNTIL_REBOOT: u32 = 4;
@@ -635,12 +688,17 @@ fn quarantine(file: &Path, sha: &str, reason: &str) -> Option<bool> {
     let gone = if fs::rename(file, &dest).is_ok() {
         true
     } else if fs::copy(file, &dest).is_ok() {
-        let w: Vec<u16> = file.to_string_lossy().encode_utf16().chain(Some(0)).collect();
-        if unsafe { MoveFileExW(w.as_ptr(), std::ptr::null(), MOVEFILE_DELAY_UNTIL_REBOOT) } == 0 {
-            let _ = fs::remove_file(&dest);
-            return None;
+        // Another drive (USB) or the file is in use.
+        if remove_forced(file) {
+            true
+        } else {
+            let w: Vec<u16> = file.to_string_lossy().encode_utf16().chain(Some(0)).collect();
+            if unsafe { MoveFileExW(w.as_ptr(), std::ptr::null(), MOVEFILE_DELAY_UNTIL_REBOOT) } == 0 {
+                let _ = fs::remove_file(&dest);
+                return None;
+            }
+            false
         }
-        false
     } else {
         return None;
     };
@@ -707,6 +765,165 @@ fn restore_menu() {
     }
 }
 
+// ---------------------------------------------------------------- USB shortcut worms
+
+/// Readable text inside a binary (.lnk): ASCII and UTF-16LE runs of 3+ characters, lowercase.
+fn binary_strings(b: &[u8]) -> String {
+    let printable = |c: u8| (0x20..0x7f).contains(&c);
+    let mut out = String::new();
+    let mut run = String::new();
+    let flush = |run: &mut String, out: &mut String| {
+        if run.len() >= 3 {
+            out.push_str(run);
+            out.push('\n');
+        }
+        run.clear();
+    };
+    for &c in b {
+        if printable(c) {
+            run.push(c as char);
+        } else {
+            flush(&mut run, &mut out);
+        }
+    }
+    flush(&mut run, &mut out);
+    for pair in b.chunks(2) {
+        if pair.len() == 2 && pair[1] == 0 && printable(pair[0]) {
+            run.push(pair[0] as char);
+        } else {
+            flush(&mut run, &mut out);
+        }
+    }
+    // the odd-aligned UTF-16 strings
+    for pair in b.get(1..).unwrap_or(&[]).chunks(2) {
+        if pair.len() == 2 && pair[1] == 0 && printable(pair[0]) {
+            run.push(pair[0] as char);
+        } else {
+            flush(&mut run, &mut out);
+        }
+    }
+    flush(&mut run, &mut out);
+    out.to_lowercase()
+}
+
+/// A shortcut that starts a command / script host instead of opening something: the
+/// "folder shortcut" trick of USB worms (`cmd.exe /c start x.vbe & start explorer Folder`).
+fn worm_shortcut(text: &str) -> bool {
+    let host = ["cmd.exe", "wscript", "cscript", "rundll32", "powershell", "mshta"].iter().any(|h| text.contains(h));
+    let action = ["start ", "/c", ".vbe", ".vbs", ".jse", ".js", ".wsf", ".dll,"].iter().any(|a| text.contains(a));
+    host && action
+}
+
+/// File names a worm shortcut / autorun.inf starts ("start lzfxbacbfi.vbe" -> lzfxbacbfi.vbe).
+fn referenced_files(text: &str) -> Vec<String> {
+    let Ok(re) = Regex::new(r"(?i)[a-z0-9_\-.~ ]{1,80}\.(?:vbe|vbs|jse|js|wsf|exe|bat|cmd|scr|pif|dll|com)\b") else { return vec![] };
+    let mut v: Vec<String> = re
+        .find_iter(text)
+        .filter_map(|m| m.as_str().split_whitespace().last().map(|s| s.trim_start_matches(['.', '-']).to_string()))
+        .filter(|n| !n.is_empty() && !["cmd.exe", "explorer.exe", "shell32.dll", "wscript.exe", "cscript.exe", "rundll32.exe"].contains(&n.as_str()))
+        .collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// Removable drives and non-system fixed drives (USB disks report "fixed").
+fn usb_roots() -> Vec<PathBuf> {
+    let sysdrive = env_path("SystemDrive", "C:").to_string_lossy().to_uppercase();
+    let mask = unsafe { GetLogicalDrives() };
+    (0..26u8)
+        .filter(|i| mask & (1 << i) != 0)
+        .map(|i| format!("{}:\\", (b'A' + i) as char))
+        .filter(|root| !root.starts_with(&sysdrive))
+        .filter(|root| {
+            let w: Vec<u16> = root.encode_utf16().chain(Some(0)).collect();
+            matches!(unsafe { GetDriveTypeW(w.as_ptr()) }, 2 | 3)
+        })
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// Finds and removes USB shortcut worms on every flash drive / external disk and makes the
+/// folders they hid visible again. Returns the number of malicious files removed.
+pub fn clean_usb(r: &mut Report) -> u32 {
+    let roots = usb_roots();
+    if roots.is_empty() {
+        r.log("   No flash drive / external disk connected.");
+        return 0;
+    }
+    let mut removed = 0;
+    for root in roots {
+        let drive = root.display().to_string();
+        let Ok(rd) = fs::read_dir(&root) else { continue };
+        let entries: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+        let mut bad: Vec<(PathBuf, String)> = vec![];
+        let mut names: Vec<String> = vec![];
+        for p in entries.iter().filter(|p| p.is_file()) {
+            let name = file_name(&p.to_string_lossy());
+            if name.ends_with(".lnk") {
+                let bytes: Vec<u8> = fs::File::open(p).map(|f| f.take(256 * 1024).bytes().flatten().collect()).unwrap_or_default();
+                let text = binary_strings(&bytes);
+                if worm_shortcut(&text) {
+                    bad.push((p.clone(), "worm shortcut (starts a hidden script / program)".into()));
+                    names.extend(referenced_files(&text));
+                }
+            } else if name == "autorun.inf" {
+                let text = fs::read_to_string(p).unwrap_or_default().to_lowercase();
+                if text.contains("open=") || text.contains("shellexecute=") || text.contains("shell\\") {
+                    bad.push((p.clone(), "autorun.inf that starts a program".into()));
+                    names.extend(referenced_files(&text));
+                }
+            } else if encoded_script(p) {
+                bad.push((p.clone(), "encoded script on the drive root (USB worm)".into()));
+            }
+        }
+        for n in names {
+            let p = root.join(&n);
+            if p.is_file() && !bad.iter().any(|(b, _)| b == &p) {
+                bad.push((p, "program / script started by the worm shortcuts".into()));
+            }
+        }
+        if bad.is_empty() {
+            r.log(format!("   {drive} clean"));
+            continue;
+        }
+        r.put(Kind::Fail, format!("USB WORM on {drive}: {} malicious file(s)", bad.len()));
+        for (p, why) in &bad {
+            let sha = sha256_file(p).map(|h| to_hex(&h)).unwrap_or_default();
+            match quarantine(p, &sha, why) {
+                Some(_) => {
+                    r.fix(format!("Removed from {drive}: {} ({why})", file_name(&p.to_string_lossy())));
+                    removed += 1;
+                }
+                None => r.manual(format!("Delete this file from the flash drive by hand: {}", p.display())),
+            }
+        }
+        // The worm hid the real folders / files (hidden + system): show them again.
+        let mut shown = 0;
+        for p in &entries {
+            let name = file_name(&p.to_string_lossy());
+            if ["system volume information", "$recycle.bin", "recycler", "recycled"].contains(&name.as_str()) || !p.exists() {
+                continue;
+            }
+            let w = wide(p);
+            let attrs = unsafe { GetFileAttributesW(w.as_ptr()) };
+            if attrs != INVALID_FILE_ATTRIBUTES && attrs & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM) != 0 {
+                let clean = attrs & !(FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_READONLY);
+                if unsafe { SetFileAttributesW(w.as_ptr(), clean) } != 0 {
+                    shown += 1;
+                }
+            }
+        }
+        if shown > 0 {
+            r.fix(format!("{shown} folder(s) / file(s) the worm had hidden on {drive} are visible again"));
+        }
+        r.manual(format!(
+            "A USB worm was on {drive}: the PC it came from is infected too - run WinTool VIRUS SCAN there before using the flash drive on it again."
+        ));
+    }
+    removed
+}
+
 // ---------------------------------------------------------------- scan
 
 struct Item {
@@ -735,6 +952,7 @@ pub fn run_into(r: &mut Report, internet: bool) -> u32 {
         ));
     }
     let win = windir().to_string_lossy().to_string();
+    let usb_removed = clean_usb(r);
     let facts = parse_facts(&ui::spin("Reading programs, services, startup entries and tasks", || ps(PROBE)));
 
     // Candidate files: running programs, autostart targets, user folders.
@@ -775,6 +993,10 @@ pub fn run_into(r: &mut Report, internet: bool) -> u32 {
         for (s, why) in path_findings(&path, &win).into_iter().chain(name_findings(&path, &db.names)) {
             it.score += s;
             it.reasons.push(why);
+        }
+        if !in_dir(&path, &win) && encoded_script(Path::new(&path)) {
+            it.score += MALWARE;
+            it.reasons.push("encoded script (Microsoft Script Encoder) - malware hides its code this way".to_string());
         }
         items.insert(path.to_lowercase(), it);
     }
@@ -846,13 +1068,11 @@ pub fn run_into(r: &mut Report, internet: bool) -> u32 {
             r.manual(format!("Malware found in a protected place: {} - run a Defender FULL scan and SFC.", it.path));
             continue;
         }
-        for (pid, _) in facts.procs.iter().filter(|(_, e)| key(e) == it.path.to_lowercase()) {
-            if cmd_quiet(&format!("taskkill /PID {pid} /F")) {
-                r.log(format!("     process {pid} stopped"));
-            }
-        }
+        let lower = it.path.to_lowercase();
+        stop_processes(r, &facts, &lower);
         for (a, f) in &auto_files {
-            if f.as_deref().is_some_and(|f| key(f) == it.path.to_lowercase()) {
+            // Started directly, or through a host: wscript "C:\...\x.vbe", rundll32 x.dll ...
+            if f.as_deref().is_some_and(|f| key(f) == lower) || expand_env(&a.command).to_lowercase().contains(&lower) {
                 disable_autostart(r, a);
             }
         }
@@ -880,6 +1100,16 @@ pub fn run_into(r: &mut Report, internet: bool) -> u32 {
                 r.log(format!("     - {w}"));
             }
             disable_autostart(r, a);
+            if let Some(script) = script_in(&expand_env(&a.command)).filter(|s| !in_dir(s, &win)) {
+                stop_processes(r, &facts, &script.to_lowercase());
+                let file = native_path(&script);
+                if file.is_file() {
+                    match quarantine(&file, "", &why.join("; ")) {
+                        Some(_) => r.fix(format!("Malicious script quarantined: {script}")),
+                        None => r.manual(format!("Delete this malicious script by hand: {script}")),
+                    }
+                }
+            }
             dealt += 1;
         } else {
             r.put(Kind::Warn, format!("Suspicious startup entry ({}): {}", a.kind, a.command));
@@ -900,10 +1130,27 @@ pub fn run_into(r: &mut Report, internet: bool) -> u32 {
     if !c2_dns.is_empty() {
         r.manual("The PC contacted known malware servers: run a Defender FULL scan and change your passwords from another, clean device.");
     }
-    if malware.is_empty() && suspicious.is_empty() && bad_entries.is_empty() && c2_dns.is_empty() {
+    if malware.is_empty() && suspicious.is_empty() && bad_entries.is_empty() && c2_dns.is_empty() && usb_removed == 0 {
         r.put(Kind::Ok, "WinTool scan: no malware found.");
     }
-    dealt
+    dealt + usb_removed
+}
+
+/// Stops every process whose program is `lower_path` or whose command line mentions it
+/// (wscript / cscript / rundll32 hosting a malicious file).
+fn stop_processes(r: &mut Report, facts: &Facts, lower_path: &str) {
+    let pids: HashSet<u32> = facts
+        .procs
+        .iter()
+        .filter(|(_, e)| key(e) == lower_path)
+        .map(|(p, _)| *p)
+        .chain(facts.cmdlines.iter().filter(|(_, c)| c.contains(lower_path)).map(|(p, _)| *p))
+        .collect();
+    for pid in pids {
+        if cmd_quiet(&format!("taskkill /PID {pid} /F")) {
+            r.log(format!("     process {pid} stopped"));
+        }
+    }
 }
 
 fn disable_autostart(r: &mut Report, a: &Autostart) {
@@ -935,8 +1182,9 @@ fn disable_autostart(r: &mut Report, a: &Autostart) {
 
 // ---------------------------------------------------------------- menu
 
-const ITEMS: [&str; 3] = [
+const ITEMS: [&str; 4] = [
     "Scan now (WinTool scanner + Defender quick scan)",
+    "Clean flash drives (USB shortcut virus)",
     "Defender FULL scan (1-3 hours)",
     "Quarantine - restore a file",
 ];
@@ -946,7 +1194,8 @@ pub fn menu() {
         ui::header(ITEMS[i]);
         match i {
             0 => scan_now(),
-            1 => defender_full(),
+            1 => usb_now(),
+            2 => defender_full(),
             _ => restore_menu(),
         }
         pause();
@@ -971,6 +1220,18 @@ fn scan_now() {
     if r.restart_needed && ui::ask("Restart now to finish removing malware?", true) {
         cmd("Restarting in 10 seconds", "shutdown /r /t 10");
     }
+}
+
+fn usb_now() {
+    println!("\n  Insert the flash drives / external disks to clean, then press Enter.");
+    pause();
+    let mut r = Report::new();
+    r.note(format!("WinTool {} - flash drive cleanup report  (by {}, {})", ui::VERSION, ui::AUTHOR, ui::SITE));
+    r.put(Kind::Plain, format!("  Date:   {}", now_str()));
+    let n = clean_usb(&mut r);
+    ui::result(true, &if n > 0 { format!("{n} malicious file(s) removed from the flash drives.") } else { "No USB worm found.".to_string() });
+    r.print_steps();
+    r.save("WinTool-usb-report.txt");
 }
 
 fn defender_full() {
@@ -1052,6 +1313,51 @@ mod tests {
         let m = parse_manifest("1763500000123|C:\\Users\\x\\a.exe|abcd|known malware|18.11.2026 10:00\r\ngarbage\r\n");
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].original, "C:\\Users\\x\\a.exe");
+    }
+
+    /// Bytes shaped like the real worm shortcut found on a flash drive (UTF-16 strings).
+    fn worm_lnk() -> Vec<u8> {
+        let mut b = vec![0x4c, 0, 0, 0, 1, 0x14, 2, 0];
+        b.extend_from_slice(b"\x00\x10Windows\x00system32\x00cmd.exe\x00\x01");
+        for s in ["/c start lzfxbacbfi.vbe&start explorer Apps&exit", "%SystemRoot%\\System32\\shell32.dll"] {
+            b.extend(s.encode_utf16().flat_map(|u| u.to_le_bytes()));
+            b.extend_from_slice(&[0, 0, 7]);
+        }
+        b
+    }
+
+    #[test]
+    fn usb_worm() {
+        let text = binary_strings(&worm_lnk());
+        assert!(text.contains("start lzfxbacbfi.vbe"), "{text}");
+        assert!(worm_shortcut(&text));
+        assert_eq!(referenced_files(&text), vec!["lzfxbacbfi.vbe".to_string()]);
+        // an ordinary shortcut to a document is not a worm
+        let mut ok = vec![0x4c, 0, 0, 0];
+        ok.extend("D:\\Docs\\report.docx".encode_utf16().flat_map(|u| u.to_le_bytes()));
+        assert!(!worm_shortcut(&binary_strings(&ok)));
+        let inf = "[autorun]\r\nopen=wscript.exe //B data.vbs\r\nicon=x.ico".to_lowercase();
+        assert!(referenced_files(&inf).contains(&"data.vbs".to_string()));
+    }
+
+    #[test]
+    fn script_rules() {
+        assert!(command_findings(r#"wscript.exe //B "C:\Users\x\AppData\Local\Temp\lzfxbacbfi.vbe""#).iter().any(|f| f.0 >= MALWARE));
+        assert!(command_findings(r#"wscript.exe //B C:\Users\x\AppData\Roaming\up.vbs"#).iter().any(|f| f.0 == 80));
+        assert!(command_findings(r#"wscript.exe "C:\Program Files\Vendor\tool.vbs""#).is_empty());
+        assert_eq!(script_in(r#"wscript //B "C:\Users\a b\x.js" arg"#).as_deref(), Some(r"C:\Users\a b\x.js"));
+        let dir = std::env::temp_dir().join("wintool-enc-test");
+        let _ = fs::create_dir_all(&dir);
+        let enc = dir.join("a.vbe");
+        fs::write(&enc, "#@~^CJ8EAA==-gD0D%+t&M%!fWHcAX2").unwrap();
+        let plain = dir.join("b.vbs");
+        fs::write(&plain, "MsgBox \"hi\"").unwrap();
+        let notscript = dir.join("c.txt");
+        fs::write(&notscript, "#@~^ in a text file").unwrap();
+        assert!(encoded_script(&enc));
+        assert!(!encoded_script(&plain));
+        assert!(!encoded_script(&notscript));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

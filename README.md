@@ -68,6 +68,7 @@ written in Rust, next to Defender.
 | How | SHA-256 against ~160 000 known malware hashes, file-name IOCs, connections to botnet servers, and behaviour rules: Windows process names outside the Windows folder, double extensions (`invoice.pdf.exe`), encoded / downloading PowerShell, mshta / regsvr32 / rundll32 / certutil tricks, unsigned programs starting from Temp. |
 | Action | Stops the process, disables its startup entries, moves the file to an admin-only quarantine (restorable from the menu). Signed files and files inside the Windows folder are never quarantined. Then: Defender definitions update + quick scan. |
 | Offline | The databases are saved to `WinTool-db` next to the `.exe`, so the scan also works offline from a USB stick. |
+| USB worms | Flash drives and external disks are cleaned too: worm shortcuts (`Folder.lnk` → `cmd /c start x.vbe`), the scripts / programs they start and `autorun.inf` go to quarantine, and the folders the worm hid become visible again. On the PC: encoded scripts (`.vbe` / `.jse`) and the startup entries that run them are removed, the running `wscript` is stopped. |
 
 **5. App installer** — 26 popular programs (browsers, 7-Zip, VLC, PDF, LibreOffice, codecs, Telegram, WhatsApp, Zoom,
 AnyDesk, TeamViewer, Steam, VC++ / .NET / DirectX runtimes …) in one go. Windows 10 / 11: `winget`; Windows 7 and PCs
@@ -166,6 +167,7 @@ LOKI üslubunda IOC skaneri, Defender ilə birlikdə.
 | Necə | ~160 000 məlum virus hash-ı ilə SHA-256 müqayisəsi, fayl adı IOC-ları, botnet serverlərinə bağlantılar və davranış qaydaları: Windows qovluğundan kənarda Windows proses adları, ikiqat uzantı (`qaime.pdf.exe`), şifrələnmiş / endirən PowerShell, mshta / regsvr32 / rundll32 / certutil fəndləri, Temp-dən başlayan imzasız proqramlar. |
 | Nə edir | Prosesi dayandırır, startup yazılarını söndürür, faylı yalnız adminlərin açabildiyi karantinə köçürür (menyudan geri qaytarmaq olar). İmzalı fayllara və Windows qovluğundakı fayllara toxunmur. Sonra: Defender bazası yenilənir + sürətli skan. |
 | Offline | Bazalar `.exe`-nin yanındakı `WinTool-db` qovluğuna saxlanılır — USB fləşkadan internetsiz də işləyir. |
+| USB qurdları | Fləşkalar və xarici disklər də təmizlənir: virus qısayolları (`Qovluq.lnk` → `cmd /c start x.vbe`), onların işə saldığı skript / proqramlar və `autorun.inf` karantinə gedir, virusun gizlətdiyi qovluqlar yenidən görünür. Kompüterdə: şifrələnmiş skriptlər (`.vbe` / `.jse`) və onları işə salan startup yazıları silinir, işləyən `wscript` dayandırılır. |
 
 **5. Proqram quraşdırıcı** — 26 məşhur proqram (brauzerlər, 7-Zip, VLC, PDF, LibreOffice, kodeklər, Telegram, WhatsApp, Zoom,
 AnyDesk, TeamViewer, Steam, VC++ / .NET / DirectX …) bir dəfəyə. Windows 10 / 11: `winget`; Windows 7 və winget olmayan
@@ -246,6 +248,7 @@ Build qaydası yuxarıda, English bölməsindədir.
 | Как | SHA-256 против ~160 000 известных хешей вредоносных программ, IOC по именам файлов, подключения к серверам ботнетов и поведенческие правила: имена системных процессов вне папки Windows, двойные расширения (`schet.pdf.exe`), закодированный / скачивающий PowerShell, трюки mshta / regsvr32 / rundll32 / certutil, неподписанные программы, стартующие из Temp. |
 | Действие | Останавливает процесс, отключает автозапуск, переносит файл в карантин, доступный только администраторам (можно восстановить из меню). Подписанные файлы и файлы в папке Windows в карантин не попадают. Затем: обновление баз Defender + быстрая проверка. |
 | Офлайн | Базы сохраняются в `WinTool-db` рядом с `.exe` — проверка работает и без интернета с флешки. |
+| USB-черви | Флешки и внешние диски тоже очищаются: ярлыки-вирусы (`Папка.lnk` → `cmd /c start x.vbe`), запускаемые ими скрипты / программы и `autorun.inf` уходят в карантин, скрытые вирусом папки снова видны. На ПК: закодированные скрипты (`.vbe` / `.jse`) и записи автозапуска, которые их запускают, удаляются, работающий `wscript` останавливается. |
 
 **5. Установка программ** — 26 популярных программ (браузеры, 7-Zip, VLC, PDF, LibreOffice, кодеки, Telegram, WhatsApp, Zoom,
 AnyDesk, TeamViewer, Steam, VC++ / .NET / DirectX …) за один раз. Windows 10 / 11: `winget`; Windows 7 и ПК без winget:
