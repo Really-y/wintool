@@ -161,6 +161,12 @@ pub fn is_win7_or_older() -> bool {
     ma < 6 || (ma == 6 && mi <= 1)
 }
 
+/// Local date and time as Windows prints it (for reports).
+pub fn now_str() -> String {
+    let out = Command::new("cmd").args(["/C", "echo %date% %time%"]).output();
+    out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
+}
+
 pub fn version_str() -> String {
     let (ma, mi, b) = win_version();
     let name = match (ma, mi) {

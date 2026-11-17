@@ -1,5 +1,6 @@
-//! Online driver install: Windows Update first, Snappy Driver Installer Origin (SDIO)
-//! for the devices Windows Update has nothing for.
+//! Online driver install: Windows Update first, then the Microsoft Update Catalog
+//! (official signed packages, matched by hardware ID), then Snappy Driver Installer
+//! Origin (SDIO) for devices that still have no driver.
 //!
 //! Policy — system stability first:
 //! - only devices with no driver or a broken one are targeted by default;
@@ -9,6 +10,7 @@
 //! - SDIO and its driver packs live in %ProgramData%\WinTool\SDIO on the repaired PC and are
 //!   deleted after a successful run; after a failed run they are kept and reported.
 
+use crate::catalog::{self, Package};
 use crate::drivers::{self, ProblemDevice};
 use crate::safety;
 use crate::ui::{self, Kind};
@@ -143,14 +145,9 @@ fn sdio_dir() -> PathBuf {
     env_path("ProgramData", r"C:\ProgramData").join(r"WinTool\SDIO")
 }
 
-fn os_is_64bit() -> bool {
-    std::env::var_os("PROCESSOR_ARCHITEW6432").is_some()
-        || std::env::var("PROCESSOR_ARCHITECTURE").map(|a| a.eq_ignore_ascii_case("AMD64")).unwrap_or(false)
-}
-
 /// Newest SDIO_<arch>R<nnn>.exe in `dir` (XP builds excluded).
 fn find_sdio_exe(dir: &Path) -> Option<PathBuf> {
-    let prefix = if os_is_64bit() { "sdio_x64_r" } else { "sdio_r" };
+    let prefix = if drivers::os_is_64bit() { "sdio_x64_r" } else { "sdio_r" };
     let mut best: Option<(u32, PathBuf)> = None;
     for e in fs::read_dir(dir).ok()?.flatten() {
         let name = e.file_name().to_string_lossy().to_lowercase();
@@ -166,7 +163,7 @@ fn find_sdio_exe(dir: &Path) -> Option<PathBuf> {
 }
 
 /// Downloads `url` to `dest`: curl.exe (Win10+), then PowerShell (TLS 1.2), then BITS.
-fn download(url: &str, dest: &Path) -> bool {
+pub fn download(url: &str, dest: &Path) -> bool {
     let ok = |p: &Path| fs::metadata(p).map(|m| m.len() > 0).unwrap_or(false);
     let _ = fs::remove_file(dest);
     let curl = windir().join(r"System32\curl.exe");
@@ -190,6 +187,29 @@ fn download(url: &str, dest: &Path) -> bool {
         .args(["/transfer", "WinToolSDIO", "/download", "/priority", "FOREGROUND", url])
         .arg(dest)
         .output();
+    ok(dest)
+}
+
+/// POSTs a form body (`application/x-www-form-urlencoded`) and saves the answer to `dest`.
+pub fn download_post(url: &str, body: &str, dest: &Path) -> bool {
+    let ok = |p: &Path| fs::metadata(p).map(|m| m.len() > 0).unwrap_or(false);
+    let _ = fs::remove_file(dest);
+    let curl = windir().join(r"System32\curl.exe");
+    if curl.is_file() {
+        let _ = Command::new(&curl).args(["-fsSL", "--retry", "2", "-A", UA, "--data-binary", body, "-o"]).arg(dest).arg(url).output();
+        if ok(dest) {
+            return true;
+        }
+    }
+    ps(&format!(
+        "try {{ [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072 }} catch {{}}
+         try {{ $w = New-Object Net.WebClient; $w.Headers.Add('User-Agent', {}); $w.Headers.Add('Content-Type', 'application/x-www-form-urlencoded')
+               [IO.File]::WriteAllText({}, $w.UploadString({}, {})) }} catch {{}}",
+        ps_quote(UA),
+        ps_quote(&dest.to_string_lossy()),
+        ps_quote(url),
+        ps_quote(body)
+    ));
     ok(dest)
 }
 
@@ -304,9 +324,11 @@ fn run_sdio(exe: &Path, base: &Path) -> SdioRun {
     if done.is_file() { SdioRun::Done } else { SdioRun::Failed }
 }
 
-fn still_broken(hwids: &[String]) -> Vec<String> {
+/// Devices from `hwids` that still have a Device Manager error
+/// (code 14 "restart required" counts as fixed).
+pub fn still_broken(hwids: &[String]) -> Vec<String> {
     let now = drivers::problem_devices(false);
-    hwids.iter().filter(|h| now.iter().any(|d| d.hwid.eq_ignore_ascii_case(h))).cloned().collect()
+    hwids.iter().filter(|h| now.iter().any(|d| d.code != 14 && d.hwid.eq_ignore_ascii_case(h))).cloned().collect()
 }
 
 fn sdio_flow(log: Log, targets: &[String], out: &mut Outcome) {
@@ -394,13 +416,32 @@ pub fn run(log: Log, explicit: bool) -> Outcome {
         Err(e) => log(Kind::Warn, format!("Windows Update search failed: {e}")),
     }
 
-    // 2) Devices Windows Update has nothing for → SDIO (no driver at all only).
+    // 2) Microsoft Update Catalog for problem devices Windows Update has nothing for.
+    let cat_targets = catalog::targets(&probs, |d| for_problems.iter().any(|u| same_device(&d.hwid, &u.hwid)));
+    let from_catalog: Vec<(String, String, Vec<Package>)> = if cat_targets.is_empty() {
+        vec![]
+    } else {
+        ui::spin("Searching the Microsoft Update Catalog", || {
+            cat_targets
+                .iter()
+                .filter_map(|d| {
+                    let pkgs = catalog::find(&d.hwid);
+                    (!pkgs.is_empty()).then(|| (d.hwid.clone(), d.name.clone(), pkgs))
+                })
+                .collect()
+        })
+    };
+
+    // 3) Devices with no driver at all that Windows Update does not cover → SDIO.
     let sdio_targets: Vec<&ProblemDevice> = probs
         .iter()
-        .filter(|d| matches!(d.code, 1 | 28) && !for_problems.iter().any(|u| same_device(&d.hwid, &u.hwid)))
+        .filter(|d| {
+            // Catalog-covered devices stay here as the fallback; SDIO is skipped if they got fixed.
+            matches!(d.code, 1 | 28) && !for_problems.iter().any(|u| same_device(&d.hwid, &u.hwid))
+        })
         .collect();
 
-    if for_problems.is_empty() && sdio_targets.is_empty() && optional.is_empty() {
+    if for_problems.is_empty() && from_catalog.is_empty() && sdio_targets.is_empty() && optional.is_empty() {
         if !probs.is_empty() {
             log(Kind::Warn, "No online driver found for the problem devices.".into());
         }
@@ -415,8 +456,15 @@ pub fn run(log: Log, explicit: bool) -> Outcome {
             log(Kind::Plain, format!("       - {}  ({}, {})", u.title, u.date, human(u.size)));
         }
     }
+    if !from_catalog.is_empty() {
+        log(Kind::Info, format!("Microsoft Update Catalog has drivers for {} device(s):", from_catalog.len()));
+        for (_, name, pkgs) in &from_catalog {
+            let p = &pkgs[0];
+            log(Kind::Plain, format!("       - {name}: {}  ({}, {})", p.title, p.date_str(), human(p.size)));
+        }
+    }
     if !sdio_targets.is_empty() {
-        log(Kind::Info, format!("Snappy Driver Installer will look for drivers for {} device(s):", sdio_targets.len()));
+        log(Kind::Info, format!("Snappy Driver Installer will look for drivers for {} device(s) (if still needed):", sdio_targets.len()));
         for d in &sdio_targets {
             log(Kind::Plain, format!("       - {}  [{}]", d.name, drivers::short_hwid(&d.hwid)));
         }
@@ -425,7 +473,7 @@ pub fn run(log: Log, explicit: bool) -> Outcome {
         log(Kind::Info, format!("{} optional driver update(s) for working devices (not selected).", optional.len()));
     }
 
-    let main = (!for_problems.is_empty() || !sdio_targets.is_empty()) && ui::ask("Install the drivers listed above?", true);
+    let main = (!for_problems.is_empty() || !from_catalog.is_empty() || !sdio_targets.is_empty()) && ui::ask("Install the drivers listed above?", true);
     let opt = !optional.is_empty() && {
         for u in &optional {
             log(Kind::Plain, format!("       - {}  ({}, {})", u.title, u.date, human(u.size)));
@@ -457,6 +505,26 @@ pub fn run(log: Log, explicit: bool) -> Outcome {
                 out.reboot |= reboot;
             }
             Err(e) => log(Kind::Fail, format!("Windows Update install failed: {e}")),
+        }
+    }
+
+    // Microsoft Update Catalog for what is still broken
+    if main && !from_catalog.is_empty() {
+        let hwids: Vec<String> = from_catalog.iter().map(|c| c.0.clone()).collect();
+        let left = ui::spin("Checking devices", || {
+            drivers::rescan_devices();
+            sleep(Duration::from_secs(3));
+            still_broken(&hwids)
+        });
+        for (hwid, name, pkgs) in from_catalog.iter().filter(|c| left.contains(&c.0)) {
+            let label = format!("Installing from the Microsoft Update Catalog: {name}");
+            match ui::spin(&label, || catalog::install_first_working(hwid, pkgs)) {
+                Some(title) => {
+                    log(Kind::Ok, format!("{name} - driver installed: {title}"));
+                    out.reboot = true;
+                }
+                None => log(Kind::Fail, format!("{name} - no catalog package made it work")),
+            }
         }
     }
 

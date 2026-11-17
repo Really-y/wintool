@@ -86,6 +86,11 @@ pub fn short_hwid(hwid: &str) -> String {
     let bus = u.split('\\').next().unwrap_or("");
     match ven_dev(&u) {
         Some((v, d)) if u.contains("VID_") => format!("{bus}\\VID_{v}&PID_{d}"),
+        // HD Audio codecs: HDAUDIO\FUNC_01&VEN_10EC&DEV_0887 (FUNC_01 = audio, FUNC_02 = modem).
+        Some((v, d)) if bus == "HDAUDIO" => {
+            let func = u.find("FUNC_").map(|i| format!("{}&", &u[i..(i + 7).min(u.len())])).unwrap_or_default();
+            format!("{bus}\\{func}VEN_{v}&DEV_{d}")
+        }
         Some((v, d)) => format!("{bus}\\VEN_{v}&DEV_{d}"),
         None => u.split('\\').take(2).collect::<Vec<_>>().join("\\"),
     }
@@ -95,21 +100,45 @@ pub fn vendor(ven: &str) -> &'static str {
     match ven {
         "10EC" | "0BDA" => "Realtek",
         "8086" | "8087" => "Intel",
+        "1002" | "1022" => "AMD",
+        "10DE" => "NVIDIA",
         "168C" | "17CB" | "0CF3" => "Qualcomm Atheros",
         "1969" => "Qualcomm Atheros / Killer",
         "14E4" | "0A5C" => "Broadcom",
         "14C3" | "0E8D" => "MediaTek",
         "1814" | "148F" => "Ralink / MediaTek",
         "11AB" | "1B4B" => "Marvell",
+        "1106" => "VIA",
+        "14F1" => "Conexant / Synaptics",
+        "111D" => "IDT / Tempo",
+        "1013" => "Cirrus Logic",
+        "1102" => "Creative",
+        "13F6" => "C-Media",
+        "11D4" => "Analog Devices (SoundMAX)",
+        "1B21" => "ASMedia",
+        "197B" => "JMicron",
+        "1217" => "O2 Micro",
+        "1180" => "Ricoh",
+        "104C" => "Texas Instruments",
+        "1912" => "Renesas",
         "10B7" => "3Com",
         "0846" => "Netgear",
         "2357" => "TP-Link",
         "0B95" => "ASIX",
+        "046D" => "Logitech",
+        "045E" => "Microsoft",
+        "138A" | "06CB" => "Synaptics",
+        "04F2" | "5986" => "Chicony / Bison (webcam)",
         _ => "",
     }
 }
 
-fn url_encode(s: &str) -> String {
+/// HD Audio sound codec (FUNC_01; FUNC_02 is a modem).
+pub fn is_audio_hwid(hwid: &str) -> bool {
+    hwid.to_uppercase().starts_with("HDAUDIO\\FUNC_01")
+}
+
+pub fn url_encode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => (b as char).to_string(),
@@ -133,12 +162,20 @@ pub fn advice(d: &ProblemDevice) -> Vec<String> {
     }
     v.push("Where to download the driver (in this order):".into());
     v.push("  1) Your laptop / motherboard maker's support page (search your exact model) - most reliable".into());
-    match brand {
-        "Realtek" if !d.hwid.to_uppercase().starts_with("USB") => {
-            v.push("  2) Realtek LAN drivers: https://www.realtek.com/Download/List?cate_id=584".into())
-        }
-        "Intel" => v.push("  2) Intel Driver & Support Assistant: https://www.intel.com/content/www/us/en/support/detect.html".into()),
-        _ => {}
+    let up = d.hwid.to_uppercase();
+    if is_audio_hwid(&up) {
+        v.push("     (sound chips are tuned by the PC maker - their sound driver works best)".into());
+    }
+    let link = match brand {
+        "Realtek" if up.starts_with("PCI") => Some("Realtek LAN drivers: https://www.realtek.com/Download/List?cate_id=584"),
+        _ if is_audio_hwid(&up) => None,
+        "Intel" => Some("Intel Driver & Support Assistant: https://www.intel.com/content/www/us/en/support/detect.html"),
+        "AMD" => Some("AMD drivers (graphics / chipset): https://www.amd.com/en/support/download/drivers.html"),
+        "NVIDIA" => Some("NVIDIA drivers: https://www.nvidia.com/en-us/drivers/"),
+        _ => None,
+    };
+    if let Some(l) = link {
+        v.push(format!("  2) {l}"));
     }
     let n = if v.last().is_some_and(|l| l.starts_with("  2)")) { 3 } else { 2 };
     v.push(format!(
@@ -148,7 +185,7 @@ pub fn advice(d: &ProblemDevice) -> Vec<String> {
     v.push(format!(
         "     Pick the newest entry for your Windows ({}{}) and download the .cab file.",
         if is_win7_or_older() { "Windows 7" } else { "Windows 10/11" },
-        if cfg!(target_pointer_width = "64") { ", x64" } else { ", x86" }
+        if os_is_64bit() { ", x64" } else { ", x86" }
     ));
     v.push("Then: put the .cab / .zip / .inf into the 'Drivers' folder next to WinTool.exe".into());
     v.push("      and run the automatic repair again - WinTool unpacks and installs it.".into());
@@ -162,6 +199,39 @@ pub fn advice(d: &ProblemDevice) -> Vec<String> {
 extern "system" {
     fn CM_Locate_DevNodeW(pdnDevInst: *mut u32, pDeviceID: *const u16, ulFlags: u32) -> u32;
     fn CM_Reenumerate_DevNode(dnDevInst: u32, ulFlags: u32) -> u32;
+    fn CM_Disable_DevNode(dnDevInst: u32, ulFlags: u32) -> u32;
+    fn CM_Enable_DevNode(dnDevInst: u32, ulFlags: u32) -> u32;
+}
+
+/// 64-bit Windows (also true for a 32-bit WinTool running under WOW64).
+pub fn os_is_64bit() -> bool {
+    std::env::var_os("PROCESSOR_ARCHITEW6432").is_some()
+        || std::env::var("PROCESSOR_ARCHITECTURE").map(|a| a.eq_ignore_ascii_case("AMD64")).unwrap_or(false)
+}
+
+/// Device node of a present device by instance ID.
+fn locate(instance_id: &str) -> Option<u32> {
+    let w: Vec<u16> = instance_id.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut dn = 0u32;
+    (unsafe { CM_Locate_DevNodeW(&mut dn, w.as_ptr(), 0) } == 0).then_some(dn)
+}
+
+/// Device Manager → "Enable device".
+pub fn enable_device(instance_id: &str) -> bool {
+    locate(instance_id).is_some_and(|dn| unsafe { CM_Enable_DevNode(dn, 0) } == 0)
+}
+
+/// Device Manager → "Disable" then "Enable": reloads the driver.
+/// Fails (and leaves the device as it was) when the device is in use and cannot stop.
+pub fn restart_device(instance_id: &str) -> bool {
+    const CM_DISABLE_UI_NOT_OK: u32 = 0x4;
+    let Some(dn) = locate(instance_id) else { return false };
+    let disabled = unsafe { CM_Disable_DevNode(dn, CM_DISABLE_UI_NOT_OK) } == 0;
+    if disabled {
+        sleep(Duration::from_secs(1));
+    }
+    let enabled = unsafe { CM_Enable_DevNode(dn, 0) } == 0;
+    disabled && enabled
 }
 
 /// Device Manager → "Scan for hardware changes" (whole tree, synchronous).
@@ -208,7 +278,7 @@ fn unpack_archives(dir: &Path, log: &mut dyn FnMut(String)) {
     }
 }
 
-fn collect_inf(dir: &Path, out: &mut Vec<PathBuf>, depth: u32) {
+pub fn collect_inf(dir: &Path, out: &mut Vec<PathBuf>, depth: u32) {
     if depth > 8 {
         return;
     }
@@ -238,14 +308,16 @@ pub fn install_from_folder(log: &mut dyn FnMut(String)) -> (usize, usize) {
         return (0, 0);
     }
     log(format!("   'Drivers' folder: {} driver(s) found, installing...", infs.len()));
-    let mut ok = 0;
-    for inf in &infs {
-        // `pnputil -i -a` works on Windows 7 and on 10/11 (legacy syntax still supported).
-        if Command::new("pnputil").arg("-i").arg("-a").arg(inf).output().map(|o| o.status.success()).unwrap_or(false) {
-            ok += 1;
-        }
-    }
-    (infs.len(), ok)
+    (infs.len(), install_infs(&infs))
+}
+
+/// Adds each .inf to the driver store and installs it on matching devices.
+/// Returns how many pnputil accepted.
+pub fn install_infs(infs: &[PathBuf]) -> usize {
+    // `pnputil -i -a` works on Windows 7 and on 10/11 (legacy syntax still supported).
+    infs.iter()
+        .filter(|inf| Command::new("pnputil").arg("-i").arg("-a").arg(inf).output().map(|o| o.status.success()).unwrap_or(false))
+        .count()
 }
 
 // ---------------------------------------------------------------- menu item
@@ -335,6 +407,10 @@ mod tests {
     fn short_hwid_and_url() {
         assert_eq!(short_hwid(r"PCI\VEN_10EC&DEV_8168&SUBSYS_86771043&REV_15\4&1"), r"PCI\VEN_10EC&DEV_8168");
         assert_eq!(short_hwid(r"USB\VID_0BDA&PID_B812\00e04c"), r"USB\VID_0BDA&PID_B812");
+        assert_eq!(
+            short_hwid(r"HDAUDIO\FUNC_01&VEN_10EC&DEV_0887&SUBSYS_1043892A&REV_1003\4&2&0&0001"),
+            r"HDAUDIO\FUNC_01&VEN_10EC&DEV_0887"
+        );
         assert_eq!(url_encode(r"PCI\VEN_10EC&DEV_8168"), "PCI%5CVEN_10EC%26DEV_8168");
     }
 }

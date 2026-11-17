@@ -27,7 +27,7 @@ Menu-driven repair tool for Windows 7 / 8 / 10 / 11, written in Rust. Single `.e
 | IP / DNS | DHCP (169.254.x.x), gateway, proxy, Winsock / TCP-IP, DNS — step by step, re-testing after every fix. A working corporate proxy is left untouched; only a dead proxy (old VPN / malware leftover) is removed. |
 | Hidden causes | Captive portal (hotel / office Wi-Fi login page) and a wrong clock (HTTPS sites fail) — the clock is corrected from the internet. |
 
-| Other drivers | Once the internet works: **Windows Update** first, then **Snappy Driver Installer Origin** for devices Windows Update has nothing for. Shows the list, asks once, installs, says if a restart is needed. Only devices without a working driver are touched; optional updates for working devices are offered separately (default: no). |
+| Other drivers | Once the internet works: **Windows Update** first, then the **Microsoft Update Catalog** (official signed packages; Windows version, architecture and hardware ID are checked before anything is installed), then **Snappy Driver Installer Origin** for devices that still have no driver. Shows the list, asks once, installs, says if a restart is needed. Only devices without a working driver are touched; optional updates for working devices are offered separately (default: no). |
 
 **Safety.** Before the first system change in a session WinTool offers a System Restore point (default: yes), and the
 network report records the previous DNS / proxy settings. Snappy Driver Installer runs in `select missing` mode only
@@ -38,9 +38,18 @@ corporate firewalls block — WinTool then reports it and moves on (30-minute li
 **Interface.** Colored terminal UI with arrow-key menus (number keys work too, `Esc` = back), spinners for long tasks,
 and a pixel-art banner. Unicode boxes on Windows 8+, ASCII on the Windows 7 console.
 
-**2. Network repair (manual)** — full reset, DNS flush, IP renew, connection test, DNS servers, proxy reset, Wi-Fi profiles.
-**3. System cleanup** — temp, Windows Update cache, error reports, thumbnail cache, recycle bin (scan first, then confirm), WinSxS.
-**4. System repair** — SFC, DISM, Windows Update reset, Print Spooler reset, icon cache, chkdsk, **find missing drivers for all devices**.
+**2. No sound — automatic diagnose & repair** (report: `WinTool-sound-report.txt`).
+
+| Step | What it checks and fixes |
+|---|---|
+| Devices & drivers | Sound card / HD Audio codec errors: enables disabled devices, restarts failing ones, installs drivers (`Drivers` folder → Windows Update → Microsoft Update Catalog → SDIO), otherwise tells you what to download. |
+| Services | Windows Audio, Audio Endpoint Builder (and MMCSS on Windows 7): startup type and running state. |
+| Playback devices | Enables disabled outputs, detects "nothing plugged into the jack", unmutes and raises a volume below 10 % to 50 %. |
+| Test tone | Plays a tone and asks whether you heard it. If not: tries the other outputs (monitor / HDMI, headset), restarts the audio stack, and on Windows 10 2004+ reinstalls the sound driver. |
+
+**3. Network repair (manual)** — full reset, DNS flush, IP renew, connection test, DNS servers, proxy reset, Wi-Fi profiles.
+**4. System cleanup** — temp, Windows Update cache, error reports, thumbnail cache, recycle bin (scan first, then confirm), WinSxS.
+**5. System repair** — SFC, DISM, Windows Update reset, Print Spooler reset, icon cache, chkdsk, **find missing drivers for all devices**.
 
 ### Offline drivers (`Drivers` folder)
 
@@ -89,7 +98,7 @@ The Win7 targets (`*-win7-windows-msvc`) are tier 3 in Rust, so they are built w
 | IP / DNS | DHCP (169.254.x.x), gateway, proxy, Winsock / TCP-IP, DNS — addım-addım, hər düzəlişdən sonra yenidən test. İşləyən korporativ proxy-yə toxunmur, yalnız ölü proxy-ni (köhnə VPN / virus qalığı) söndürür. |
 | Gizli səbəblər | Captive portal (hotel / ofis Wi-Fi login səhifəsi) və səhv saat (HTTPS saytları açılmır) — saatı internetdən düzəldir. |
 
-| Digər driverlər | İnternet işləyəndən sonra: əvvəlcə **Windows Update**, onun tapmadığı cihazlar üçün **Snappy Driver Installer Origin**. Siyahını göstərir, bir dəfə soruşur, quraşdırır, restart lazımdırsa deyir. Yalnız driveri işləməyən cihazlara toxunur; işləyən cihazlar üçün optional yeniləmələr ayrıca təklif olunur (default: yox). |
+| Digər driverlər | İnternet işləyəndən sonra: əvvəlcə **Windows Update**, sonra **Microsoft Update Catalog** (rəsmi imzalı paketlər; quraşdırmadan əvvəl Windows versiyası, arxitektura və hardware ID yoxlanılır), hələ də driveri olmayan cihazlar üçün **Snappy Driver Installer Origin**. Siyahını göstərir, bir dəfə soruşur, quraşdırır, restart lazımdırsa deyir. Yalnız driveri işləməyən cihazlara toxunur; işləyən cihazlar üçün optional yeniləmələr ayrıca təklif olunur (default: yox). |
 
 **Təhlükəsizlik.** Sessiyada ilk sistem dəyişikliyindən əvvəl System Restore point təklif edir (default: bəli), şəbəkə
 hesabatına köhnə DNS / proxy ayarları yazılır. Snappy Driver Installer yalnız `select missing` rejimində işləyir (işləyən
@@ -100,9 +109,18 @@ o zaman WinTool bunu yazıb davam edir (30 dəqiqə limit).
 **İnterfeys.** Rəngli terminal UI, ox düymələri ilə menyu (rəqəmlər də işləyir, `Esc` = geri), uzun işlərdə spinner,
 piksel-art banner. Windows 8+ üçün Unicode çərçivələr, Windows 7 konsolunda ASCII.
 
-**2. Şəbəkə təmiri (əl ilə)** — tam reset, DNS flush, IP yeniləmə, bağlantı testi, DNS serverləri, proxy reset, Wi-Fi profilləri.
-**3. Sistem təmizliyi** — temp, Windows Update cache, xəta hesabatları, thumbnail cache, zibil qutusu (əvvəl skan, sonra təsdiq), WinSxS.
-**4. Sistem təmiri** — SFC, DISM, Windows Update reset, Print Spooler reset, ikon cache, chkdsk, **bütün cihazlar üçün çatışmayan driverləri tapmaq**.
+**2. Səs yoxdur — avtomatik tap və həll et** (hesabat: `WinTool-sound-report.txt`).
+
+| Addım | Nəyi yoxlayır və düzəldir |
+|---|---|
+| Cihazlar və driverlər | Səs kartı / HD Audio codec xətaları: söndürülmüş cihazı yandırır, işləməyəni yenidən başladır, driver quraşdırır (`Drivers` qovluğu → Windows Update → Microsoft Update Catalog → SDIO), olmasa nəyi endirməli olduğunu deyir. |
+| Servislər | Windows Audio, Audio Endpoint Builder (Windows 7-də MMCSS də): başlanğıc növü və işləmə vəziyyəti. |
+| Səs çıxışları | Söndürülmüş çıxışları yandırır, "jack-a heç nə qoşulmayıb" halını tapır, səsi açır (mute), 10 %-dən aşağı səsi 50 %-ə qaldırır. |
+| Test səsi | Səs çalır və eşidib-eşitmədiyini soruşur. Eşitməsən: digər çıxışları sınayır (monitor / HDMI, qulaqlıq), audio sistemini yenidən başladır, Windows 10 2004+ üzərində səs driverini yenidən quraşdırır. |
+
+**3. Şəbəkə təmiri (əl ilə)** — tam reset, DNS flush, IP yeniləmə, bağlantı testi, DNS serverləri, proxy reset, Wi-Fi profilləri.
+**4. Sistem təmizliyi** — temp, Windows Update cache, xəta hesabatları, thumbnail cache, zibil qutusu (əvvəl skan, sonra təsdiq), WinSxS.
+**5. Sistem təmiri** — SFC, DISM, Windows Update reset, Print Spooler reset, ikon cache, chkdsk, **bütün cihazlar üçün çatışmayan driverləri tapmaq**.
 
 ### Offline driverlər (`Drivers` qovluğu)
 
@@ -133,7 +151,7 @@ Build qaydası yuxarıda, English bölməsindədir.
 | IP / DNS | DHCP (169.254.x.x), шлюз, прокси, Winsock / TCP-IP, DNS — по шагам, с повторной проверкой после каждого исправления. Рабочий корпоративный прокси не трогает, отключает только неработающий (остаток старого VPN / вируса). |
 | Скрытые причины | Captive portal (страница входа в Wi-Fi отеля / офиса) и неверное время (не открываются HTTPS-сайты) — время исправляется по интернету. |
 
-| Остальные драйверы | Когда интернет заработал: сначала **Windows Update**, затем **Snappy Driver Installer Origin** для устройств, для которых в Windows Update ничего нет. Показывает список, один раз спрашивает, устанавливает, сообщает о необходимости перезагрузки. Затрагиваются только устройства без рабочего драйвера; необязательные обновления для рабочих устройств предлагаются отдельно (по умолчанию: нет). |
+| Остальные драйверы | Когда интернет заработал: сначала **Windows Update**, затем **Microsoft Update Catalog** (официальные подписанные пакеты; перед установкой проверяются версия Windows, архитектура и ID оборудования), затем **Snappy Driver Installer Origin** для устройств, у которых всё ещё нет драйвера. Показывает список, один раз спрашивает, устанавливает, сообщает о необходимости перезагрузки. Затрагиваются только устройства без рабочего драйвера; необязательные обновления для рабочих устройств предлагаются отдельно (по умолчанию: нет). |
 
 **Безопасность.** Перед первым изменением системы в сеансе WinTool предлагает создать точку восстановления (по умолчанию: да),
 а в отчёт о сети записываются прежние настройки DNS / прокси. Snappy Driver Installer работает только в режиме `select missing`
@@ -144,9 +162,18 @@ Build qaydası yuxarıda, English bölməsindədir.
 **Интерфейс.** Цветной интерфейс в терминале, меню стрелками (цифры тоже работают, `Esc` = назад), индикаторы для долгих
 операций, пиксель-арт баннер. Рамки Unicode в Windows 8+, ASCII в консоли Windows 7.
 
-**2. Ремонт сети (вручную)** — полный сброс, очистка DNS, обновление IP, тест подключения, DNS-серверы, сброс прокси, профили Wi-Fi.
-**3. Очистка системы** — temp, кэш Windows Update, отчёты об ошибках, кэш эскизов, корзина (сначала сканирование, затем подтверждение), WinSxS.
-**4. Ремонт системы** — SFC, DISM, сброс Windows Update, сброс диспетчера печати, кэш значков, chkdsk, **поиск недостающих драйверов для всех устройств**.
+**2. Нет звука — автоматическая диагностика и ремонт** (отчёт: `WinTool-sound-report.txt`).
+
+| Шаг | Что проверяет и исправляет |
+|---|---|
+| Устройства и драйверы | Ошибки звуковой карты / кодека HD Audio: включает отключённые устройства, перезапускает неработающие, ставит драйверы (папка `Drivers` → Windows Update → Microsoft Update Catalog → SDIO), иначе подсказывает, что скачать. |
+| Службы | Windows Audio, Audio Endpoint Builder (и MMCSS в Windows 7): тип запуска и состояние. |
+| Устройства вывода | Включает отключённые выходы, определяет «в разъём ничего не вставлено», снимает Mute и поднимает громкость ниже 10 % до 50 %. |
+| Тестовый звук | Проигрывает сигнал и спрашивает, слышно ли его. Если нет: пробует другие выходы (монитор / HDMI, гарнитура), перезапускает аудиосистему, а в Windows 10 2004+ переустанавливает звуковой драйвер. |
+
+**3. Ремонт сети (вручную)** — полный сброс, очистка DNS, обновление IP, тест подключения, DNS-серверы, сброс прокси, профили Wi-Fi.
+**4. Очистка системы** — temp, кэш Windows Update, отчёты об ошибках, кэш эскизов, корзина (сначала сканирование, затем подтверждение), WinSxS.
+**5. Ремонт системы** — SFC, DISM, сброс Windows Update, сброс диспетчера печати, кэш значков, chkdsk, **поиск недостающих драйверов для всех устройств**.
 
 ### Офлайн-драйверы (папка `Drivers`)
 

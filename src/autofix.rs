@@ -7,6 +7,7 @@
 
 use crate::drivers::{self, ProblemDevice};
 use crate::online;
+use crate::report::Report;
 use crate::safety;
 use crate::ui::{self, Kind};
 use crate::util::*;
@@ -16,60 +17,10 @@ use std::process::Command;
 use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-// ---------------------------------------------------------------- report
-
-struct Report {
-    lines: Vec<String>,
-    fixed: Vec<String>,
-    manual: Vec<Vec<String>>,
-    advised: Vec<String>,
-    restart_needed: bool,
-}
-
-impl Report {
-    fn new() -> Self {
-        Self { lines: vec![], fixed: vec![], manual: vec![], advised: vec![], restart_needed: false }
-    }
-    /// Colored line on screen, plain line in the report file.
-    fn put(&mut self, kind: Kind, s: impl Into<String>) {
-        let s = s.into();
-        ui::line(kind, &s);
-        self.lines.push(ui::plain(kind, &s));
-    }
-    fn log(&mut self, s: impl Into<String>) {
-        let s = s.into();
-        let kind = if s.trim_start().starts_with("PROBLEM") { Kind::Warn } else { Kind::Plain };
-        self.put(kind, s);
-    }
-    fn step(&mut self, s: &str) {
-        ui::step(s);
-        self.lines.push(String::new());
-        self.lines.push(s.to_string());
-    }
-    /// Report file only (not printed).
-    fn note(&mut self, s: impl Into<String>) {
-        self.lines.push(s.into());
-    }
-    fn fix(&mut self, s: impl Into<String>) {
-        let s = s.into();
-        self.put(Kind::Ok, s.clone());
-        self.fixed.push(s);
-    }
-    fn manual(&mut self, s: impl Into<String>) {
-        self.manual.push(vec![s.into()]);
-    }
-    /// Download advice for a device, once per hardware ID.
-    fn advise(&mut self, d: &ProblemDevice) {
-        if self.advised.iter().any(|h| h.eq_ignore_ascii_case(&d.hwid)) {
-            return;
-        }
-        self.advised.push(d.hwid.clone());
-        let mut block = drivers::advice(d);
-        if !d.likely_network && d.code == 28 && d.hwid.to_uppercase().starts_with("PCI") {
-            block.insert(0, "Unknown device without a driver (often the network card):".into());
-        }
-        self.manual.push(block);
-    }
+/// A driverless unknown PCI device is very often the network card.
+fn net_intro(d: &ProblemDevice) -> Option<&'static str> {
+    (!d.likely_network && d.code == 28 && d.hwid.to_uppercase().starts_with("PCI"))
+        .then_some("Unknown device without a driver (often the network card):")
 }
 
 // ---------------------------------------------------------------- adapters (WMI)
@@ -399,11 +350,6 @@ fn record_settings(r: &mut Report) {
     r.note("--- end of previous settings ---");
 }
 
-fn now_str() -> String {
-    let out = Command::new("cmd").args(["/C", "echo %date% %time%"]).output();
-    out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
-}
-
 // ---------------------------------------------------------------- main flow
 
 pub fn run() {
@@ -443,7 +389,7 @@ pub fn run() {
         let outcome = online::run(&mut |k, s| r.put(k, s), false);
         r.restart_needed |= outcome.reboot;
         for d in &outcome.remaining {
-            r.advise(d);
+            r.advise(d, net_intro(d));
         }
         if let Some(dir) = outcome.kept_dir {
             r.manual(format!("Snappy Driver Installer files were kept for a retry in {} - delete with: rmdir /s /q \"{}\"", dir.display(), dir.display()));
@@ -453,9 +399,7 @@ pub fn run() {
     }
 
     summary(&mut r, &p);
-    for f in drivers::save_text("WinTool-network-report.txt", &r.lines) {
-        ui::ok(&format!("Report saved: {}", f.display()));
-    }
+    r.save("WinTool-network-report.txt");
 
     if r.restart_needed && ui::ask("Restart now?", false) {
         cmd("Restarting in 10 seconds", "shutdown /r /t 10");
@@ -530,7 +474,7 @@ fn driver_stage(r: &mut Report) {
         r.log("   The right driver is not available offline - see the download instructions below.");
     }
     for d in &still {
-        r.advise(d);
+        r.advise(d, net_intro(d));
     }
     if adapters().is_empty() && still.is_empty() {
         r.manual(
@@ -706,25 +650,7 @@ fn summary(r: &mut Report, p: &Probe) {
     if r.restart_needed && p.ok() {
         r.put(Kind::Warn, "Restart the computer to finish the driver installation.");
     }
-    let fixed = r.fixed.clone();
-    if fixed.is_empty() {
-        r.put(Kind::Plain, "\n  Fixes applied: none");
-    } else {
-        r.put(Kind::Plain, "\n  Fixes applied:");
-        for f in fixed {
-            r.put(Kind::Plain, format!("    + {f}"));
-        }
-    }
-    let manual = r.manual.clone();
-    if !manual.is_empty() {
-        r.put(Kind::Plain, "\n  What you need to do:");
-        for (i, block) in manual.iter().enumerate() {
-            r.put(Kind::Plain, "");
-            for (j, line) in block.iter().enumerate() {
-                r.put(Kind::Plain, if j == 0 { format!("  {}. {line}", i + 1) } else { format!("     {line}") });
-            }
-        }
-    }
+    r.print_steps();
 }
 
 #[cfg(test)]
