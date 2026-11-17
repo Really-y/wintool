@@ -611,7 +611,7 @@ fn network_stage(r: &mut Report) -> Probe {
 fn final_stage(r: &mut Report, p: &Probe) {
     if p.http == Http::Portal {
         r.log("   This network requires a login page (hotel / office / cafe Wi-Fi).");
-        let _ = Command::new("cmd").args(["/C", "start", "", "http://www.msftconnecttest.com/redirect"]).status();
+        let _ = Command::new(sys("cmd")).args(["/C", "start", "", "http://www.msftconnecttest.com/redirect"]).status();
         r.manual("Log in / accept the terms on the page that opened in the browser.");
     }
     // A wrong clock breaks every HTTPS site.
