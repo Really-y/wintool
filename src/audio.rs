@@ -12,7 +12,6 @@ use crate::report::Report;
 use crate::safety;
 use crate::ui::{self, Kind};
 use crate::util::*;
-use std::path::PathBuf;
 use std::process::Command;
 use std::thread::sleep;
 use std::time::Duration;
@@ -481,7 +480,7 @@ pub fn run() {
     r.save("WinTool-sound-report.txt");
 
     if !works && ui::ask("Open the Sound control panel now?", false) {
-        let _ = Command::new("control").arg("mmsys.cpl").spawn();
+        let _ = Command::new(sys("control")).arg("mmsys.cpl").spawn();
     }
     if r.restart_needed && ui::ask("Restart now?", false) {
         cmd("Restarting in 10 seconds", "shutdown /r /t 10");
@@ -675,11 +674,6 @@ fn endpoints_stage(r: &mut Report) -> Vec<Endpoint> {
     active
 }
 
-fn pnputil() -> PathBuf {
-    // A 32-bit WinTool on 64-bit Windows must use the 64-bit pnputil.
-    let sys = if std::env::var_os("PROCESSOR_ARCHITEW6432").is_some() { "Sysnative" } else { "System32" };
-    windir().join(sys).join("pnputil.exe")
-}
 
 /// Stops the audio services, restarts every working sound device, starts the services.
 fn restart_audio_stack() -> usize {
@@ -697,7 +691,7 @@ fn restart_audio_stack() -> usize {
 /// the best driver from its driver store again. Windows 10 2004+ (`pnputil /remove-device`).
 fn reinstall_sound_devices() -> usize {
     cmd_quiet("net stop Audiosrv /y");
-    let pnp = pnputil();
+    let pnp = sys("pnputil");
     let n = sound_devices()
         .iter()
         .filter(|d| d.media())

@@ -267,7 +267,7 @@ fn unpack_archives(dir: &Path, log: &mut dyn FnMut(String)) {
         log(format!("   Unpacking {}", p.file_name().unwrap_or_default().to_string_lossy()));
         let ok = if ext == "cab" {
             // `expand` ships with every Windows version since XP.
-            Command::new("expand").arg("-F:*").arg(&p).arg(&out).output().map(|o| o.status.success()).unwrap_or(false)
+            Command::new(sys("expand")).arg("-F:*").arg(&p).arg(&out).output().map(|o| o.status.success()).unwrap_or(false)
         } else {
             unzip(&p, &out)
         };
@@ -316,7 +316,7 @@ pub fn install_from_folder(log: &mut dyn FnMut(String)) -> (usize, usize) {
 pub fn install_infs(infs: &[PathBuf]) -> usize {
     // `pnputil -i -a` works on Windows 7 and on 10/11 (legacy syntax still supported).
     infs.iter()
-        .filter(|inf| Command::new("pnputil").arg("-i").arg("-a").arg(inf).output().map(|o| o.status.success()).unwrap_or(false))
+        .filter(|inf| Command::new(sys("pnputil")).arg("-i").arg("-a").arg(inf).output().map(|o| o.status.success()).unwrap_or(false))
         .count()
 }
 

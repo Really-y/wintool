@@ -298,7 +298,7 @@ fn install(pkg: &Package, dir: &Path) -> bool {
     if !online::download(&url, &cab) || fs::create_dir_all(&out).is_err() {
         return false;
     }
-    let unpacked = Command::new("expand").arg("-F:*").arg(&cab).arg(&out).output().map(|o| o.status.success()).unwrap_or(false);
+    let unpacked = Command::new(sys("expand")).arg("-F:*").arg(&cab).arg(&out).output().map(|o| o.status.success()).unwrap_or(false);
     let _ = fs::remove_file(&cab);
     let mut infs = vec![];
     drivers::collect_inf(&out, &mut infs, 0);

@@ -103,7 +103,7 @@ fn restart_adapter(a: &Adapter) {
 
 /// Tries saved Wi-Fi profiles one by one.
 fn wifi_connect_saved(r: &mut Report, a: &Adapter) -> bool {
-    let out = Command::new("netsh").args(["wlan", "show", "profiles"]).output();
+    let out = Command::new(sys("netsh")).args(["wlan", "show", "profiles"]).output();
     let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
     // "label : name" lines after the first "-----" header line; the label is localized, the name is not.
     let profiles: Vec<String> = text
@@ -140,7 +140,7 @@ fn wifi_connect_saved(r: &mut Report, a: &Adapter) -> bool {
 const INET_SETTINGS: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
 
 fn reg_value(name: &str) -> Option<String> {
-    let out = Command::new("reg").args(["query", INET_SETTINGS, "/v", name]).output().ok()?;
+    let out = Command::new(sys("reg")).args(["query", INET_SETTINGS, "/v", name]).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
     // "    ProxyServer    REG_SZ    host:port" — the value follows the REG_* type.
     text.lines().find_map(|l| {
@@ -215,7 +215,7 @@ impl Probe {
 }
 
 fn default_gateway() -> Option<String> {
-    let out = Command::new("route").args(["print", "0.0.0.0"]).output().ok()?;
+    let out = Command::new(sys("route")).args(["print", "0.0.0.0"]).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
     text.lines().find_map(|l| {
         let t: Vec<&str> = l.split_whitespace().collect();
@@ -300,7 +300,7 @@ fn utc_string(unix: i64) -> String {
 }
 
 fn has_apipa() -> bool {
-    let out = Command::new("ipconfig").output();
+    let out = Command::new(sys("ipconfig")).output();
     out.map(|o| String::from_utf8_lossy(&o.stdout).contains("169.254.")).unwrap_or(false)
 }
 
@@ -340,7 +340,7 @@ fn record_settings(r: &mut Report) {
     r.note("--- Settings before repair (to restore manually if needed) ---");
     r.note(format!("User proxy: ProxyEnable={} ProxyServer={}", reg_value("ProxyEnable").unwrap_or_default(), reg_value("ProxyServer").unwrap_or_default()));
     for (title, args) in [("WinHTTP proxy", &["winhttp", "show", "proxy"][..]), ("DNS servers", &["interface", "ip", "show", "dns"][..])] {
-        let out = Command::new("netsh").args(args).output();
+        let out = Command::new(sys("netsh")).args(args).output();
         let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
         r.note(format!("{title}:"));
         for l in text.lines().filter(|l| !l.trim().is_empty()) {

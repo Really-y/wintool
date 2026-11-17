@@ -12,18 +12,18 @@ use std::process::{Command, Stdio};
 /// Runs a program with arguments; its output goes straight to the console.
 pub fn run(desc: &str, prog: &str, args: &[&str]) -> bool {
     ui::info(desc);
-    report(Command::new(prog).args(args).status())
+    report(Command::new(sys(prog)).args(args).status())
 }
 
 /// `cmd /C <line>` — the line is passed verbatim (Rust adds no extra quoting).
 pub fn cmd(desc: &str, line: &str) -> bool {
     ui::info(desc);
-    report(Command::new("cmd").arg("/C").raw_arg(line).status())
+    report(Command::new(sys("cmd")).arg("/C").raw_arg(line).status())
 }
 
 /// Runs silently (service stop/start etc.) and only reports success.
 pub fn cmd_quiet(line: &str) -> bool {
-    Command::new("cmd")
+    Command::new(sys("cmd"))
         .arg("/C")
         .raw_arg(line)
         .stdout(Stdio::null())
@@ -55,7 +55,7 @@ fn report(r: io::Result<std::process::ExitStatus>) -> bool {
 pub fn unzip(zip: &Path, out: &Path) -> bool {
     let _ = fs::create_dir_all(out);
     let has_items = || out.read_dir().map(|mut i| i.next().is_some()).unwrap_or(false);
-    let tar = windir().join(r"System32\tar.exe");
+    let tar = sys("tar");
     if tar.is_file() && Command::new(&tar).arg("-xf").arg(zip).arg("-C").arg(out).output().map(|o| o.status.success()).unwrap_or(false) {
         return has_items();
     }
@@ -84,7 +84,7 @@ pub fn internet_ok() -> bool {
 /// Runs a PowerShell script via -EncodedCommand (no quoting issues; works with PS 2.0 on Win7).
 pub fn ps(script: &str) -> String {
     let utf16: Vec<u8> = script.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
-    Command::new("powershell")
+    Command::new(sys(r"WindowsPowerShell\v1.0\powershell"))
         .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand"])
         .arg(base64(&utf16))
         .output()
@@ -140,7 +140,7 @@ pub fn win_version() -> (u32, u32, u32) {
 /// Parses `ver` output (e.g. "Microsoft Windows [Version 6.1.7601]") into major/minor/build.
 /// Only the digits inside the brackets are used, so the display language does not matter.
 fn detect_version() -> (u32, u32, u32) {
-    let out = Command::new("cmd").args(["/C", "ver"]).output();
+    let out = Command::new(sys("cmd")).args(["/C", "ver"]).output();
     let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
     let inner = text.split('[').nth(1).unwrap_or("");
     let nums: Vec<u32> = inner
@@ -163,7 +163,7 @@ pub fn is_win7_or_older() -> bool {
 
 /// Local date and time as Windows prints it (for reports).
 pub fn now_str() -> String {
-    let out = Command::new("cmd").args(["/C", "echo %date% %time%"]).output();
+    let out = Command::new(sys("cmd")).args(["/C", "echo %date% %time%"]).output();
     out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
 }
 
@@ -193,6 +193,22 @@ pub fn env_path(var: &str, fallback: &str) -> PathBuf {
 
 pub fn windir() -> PathBuf {
     env_path("SystemRoot", r"C:\Windows")
+}
+
+/// Full path of a Windows system program, e.g. `sys("netsh")`. Programs are never looked up by
+/// bare name: Windows would search WinTool's own folder first (often Downloads), where a planted
+/// `cmd.exe` would run as admin. A 32-bit WinTool on 64-bit Windows gets the real (64-bit)
+/// System32 through Sysnative, so tools missing from SysWOW64 (pnputil) and `sfc` work too.
+pub fn sys(name: &str) -> PathBuf {
+    let dir = if env::var_os("PROCESSOR_ARCHITEW6432").is_some() { "Sysnative" } else { "System32" };
+    let p = windir().join(dir).join(name);
+    if p.extension().is_some() { p } else { p.with_extension("exe") }
+}
+
+/// Makes System32 the working directory, so `cmd /C "sc ..."` (cmd searches the current
+/// directory before PATH) cannot pick up a planted program from where WinTool was started.
+pub fn safe_cwd() {
+    let _ = env::set_current_dir(windir().join("System32"));
 }
 
 /// Folder that contains WinTool.exe (e.g. the USB stick).

@@ -73,7 +73,7 @@ fn full_repair() {
 
 /// Default gateway from the `route print` table (language-independent).
 fn default_gateway() -> Option<String> {
-    let out = Command::new("route").args(["print", "0.0.0.0"]).output().ok()?;
+    let out = Command::new(sys("route")).args(["print", "0.0.0.0"]).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
     text.lines().find_map(|l| {
         let t: Vec<&str> = l.split_whitespace().collect();

@@ -25,7 +25,8 @@ const ITEMS: [&str; 5] = [
 ];
 
 fn main() {
-    let _ = std::process::Command::new("cmd").args(["/C", "title WinTool"]).status();
+    util::safe_cwd();
+    let _ = std::process::Command::new(util::sys("cmd")).args(["/C", "title WinTool"]).status();
     while let Some(i) = ui::menu("Main menu", &ITEMS, "Exit", true) {
         match i {
             0 => {

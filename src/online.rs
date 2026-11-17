@@ -166,7 +166,7 @@ fn find_sdio_exe(dir: &Path) -> Option<PathBuf> {
 pub fn download(url: &str, dest: &Path) -> bool {
     let ok = |p: &Path| fs::metadata(p).map(|m| m.len() > 0).unwrap_or(false);
     let _ = fs::remove_file(dest);
-    let curl = windir().join(r"System32\curl.exe");
+    let curl = sys("curl");
     if curl.is_file() {
         let _ = Command::new(&curl).args(["-fsSL", "--retry", "2", "-A", UA, "-o"]).arg(dest).arg(url).output();
         if ok(dest) {
@@ -183,7 +183,7 @@ pub fn download(url: &str, dest: &Path) -> bool {
     if ok(dest) {
         return true;
     }
-    let _ = Command::new("bitsadmin")
+    let _ = Command::new(sys("bitsadmin"))
         .args(["/transfer", "WinToolSDIO", "/download", "/priority", "FOREGROUND", url])
         .arg(dest)
         .output();
@@ -194,7 +194,7 @@ pub fn download(url: &str, dest: &Path) -> bool {
 pub fn download_post(url: &str, body: &str, dest: &Path) -> bool {
     let ok = |p: &Path| fs::metadata(p).map(|m| m.len() > 0).unwrap_or(false);
     let _ = fs::remove_file(dest);
-    let curl = windir().join(r"System32\curl.exe");
+    let curl = sys("curl");
     if curl.is_file() {
         let _ = Command::new(&curl).args(["-fsSL", "--retry", "2", "-A", UA, "--data-binary", body, "-o"]).arg(dest).arg(url).output();
         if ok(dest) {
