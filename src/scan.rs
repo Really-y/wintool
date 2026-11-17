@@ -574,7 +574,7 @@ fn sha256_file(p: &Path) -> Option<[u8; 32]> {
 }
 
 /// Authenticode status per file (lowercase path → ("Valid" / "NotSigned" / ..., signer)).
-fn signatures(paths: &[String]) -> HashMap<String, (String, String)> {
+pub(crate) fn signatures(paths: &[String]) -> HashMap<String, (String, String)> {
     let mut map = HashMap::new();
     if paths.is_empty() {
         return map;
