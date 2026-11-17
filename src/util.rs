@@ -228,39 +228,94 @@ pub fn dir_size(p: &Path) -> u64 {
         .sum()
 }
 
-/// Deletes the CONTENTS of a folder (the folder itself stays). Files in use are skipped.
-/// Returns (bytes freed, number of entries that could not be removed).
+/// Deletes the CONTENTS of a folder (the folder itself stays), carrying on past anything in
+/// use: one locked file must not stop the rest of the folder from being cleaned.
+/// Returns (bytes freed, number of files/folders that could not be removed).
 pub fn clear_dir(p: &Path) -> (u64, u32) {
+    clear_dir_keep(p, &[])
+}
+
+/// Like `clear_dir`, but top-level entries named in `keep` (lowercase) are left alone.
+pub fn clear_dir_keep(p: &Path, keep: &[&str]) -> (u64, u32) {
     let before = dir_size(p);
-    let mut failed = 0;
-    if let Ok(rd) = fs::read_dir(p) {
-        for e in rd.flatten() {
-            let path = e.path();
-            let is_dir = e.file_type().map(|t| t.is_dir() && !t.is_symlink()).unwrap_or(false);
-            let ok = if is_dir { fs::remove_dir_all(&path).is_ok() } else { fs::remove_file(&path).is_ok() };
-            if !ok {
-                failed += 1;
-            }
-        }
-    }
+    let failed = wipe(p, keep);
     (before.saturating_sub(dir_size(p)), failed)
 }
 
+fn wipe(dir: &Path, keep: &[&str]) -> u32 {
+    use std::os::windows::fs::FileTypeExt;
+    let Ok(rd) = fs::read_dir(dir) else { return 0 };
+    let mut failed = 0;
+    for e in rd.flatten() {
+        if keep.contains(&e.file_name().to_string_lossy().to_lowercase().as_str()) {
+            continue;
+        }
+        let path = e.path();
+        let Ok(t) = e.file_type() else {
+            failed += 1;
+            continue;
+        };
+        let ok = if t.is_symlink() {
+            // Links and junctions are removed themselves, never followed.
+            if t.is_symlink_dir() { fs::remove_dir(&path).is_ok() } else { remove_file_force(&path) }
+        } else if t.is_dir() {
+            let f = wipe(&path, &[]);
+            failed += f;
+            f > 0 || remove_dir_force(&path)
+        } else {
+            remove_file_force(&path)
+        };
+        if !ok {
+            failed += 1;
+        }
+    }
+    failed
+}
+
+/// Clears the read-only attribute (it blocks deletion on Windows).
+fn make_writable(p: &Path) {
+    if let Ok(m) = fs::symlink_metadata(p) {
+        let mut perm = m.permissions();
+        if perm.readonly() {
+            #[allow(clippy::permissions_set_readonly_false)]
+            perm.set_readonly(false);
+            let _ = fs::set_permissions(p, perm);
+        }
+    }
+}
+
+fn remove_file_force(p: &Path) -> bool {
+    fs::remove_file(p).is_ok() || {
+        make_writable(p);
+        fs::remove_file(p).is_ok()
+    }
+}
+
+fn remove_dir_force(p: &Path) -> bool {
+    fs::remove_dir(p).is_ok() || {
+        make_writable(p);
+        fs::remove_dir(p).is_ok()
+    }
+}
+
 /// Deletes files in `dir` whose lowercase name starts with `prefix` and ends with `suffix`.
-pub fn remove_matching(dir: &Path, prefix: &str, suffix: &str) -> u64 {
-    let mut freed = 0;
+/// Returns (bytes freed, files that could not be removed - usually in use).
+pub fn remove_matching(dir: &Path, prefix: &str, suffix: &str) -> (u64, u32) {
+    let (mut freed, mut failed) = (0, 0);
     if let Ok(rd) = fs::read_dir(dir) {
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().to_lowercase();
             if name.starts_with(prefix) && name.ends_with(suffix) {
                 let len = e.metadata().map(|m| m.len()).unwrap_or(0);
-                if fs::remove_file(e.path()).is_ok() {
+                if remove_file_force(&e.path()) {
                     freed += len;
+                } else {
+                    failed += 1;
                 }
             }
         }
     }
-    freed
+    (freed, failed)
 }
 
 pub fn human(b: u64) -> String {

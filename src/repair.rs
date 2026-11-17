@@ -113,8 +113,8 @@ fn rebuild_icon_cache() {
         freed = 0;
     }
     let exp = local.join(r"Microsoft\Windows\Explorer");
-    freed += remove_matching(&exp, "iconcache_", ".db");
-    freed += remove_matching(&exp, "thumbcache_", ".db");
+    freed += remove_matching(&exp, "iconcache_", ".db").0;
+    freed += remove_matching(&exp, "thumbcache_", ".db").0;
     println!("  Cache removed: {}", human(freed));
     if restart_explorer() {
         println!("  Explorer restarted. Sign out / restart once for the full effect.");
