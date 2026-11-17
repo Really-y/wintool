@@ -116,8 +116,40 @@ fn rebuild_icon_cache() {
     freed += remove_matching(&exp, "iconcache_", ".db");
     freed += remove_matching(&exp, "thumbcache_", ".db");
     println!("  Cache removed: {}", human(freed));
-    let _ = std::process::Command::new("explorer.exe").spawn();
-    println!("  Explorer restarted. Sign out / restart once for the full effect.");
+    if restart_explorer() {
+        println!("  Explorer restarted. Sign out / restart once for the full effect.");
+    } else {
+        println!("  Explorer did not come back: press Ctrl+Shift+Esc > File > Run new task > explorer.");
+    }
+}
+
+fn explorer_running() -> bool {
+    std::process::Command::new(sys("tasklist"))
+        .args(["/FI", "IMAGENAME eq explorer.exe", "/NH"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase().contains("explorer.exe"))
+        .unwrap_or(false)
+}
+
+/// Brings the shell back WITHOUT admin rights. Starting explorer.exe from this elevated
+/// process would make the whole desktop (and everything opened from it) run as admin.
+/// Windows normally restarts the shell itself as the signed-in user; if it doesn't,
+/// explorer is started at the Basic User trust level.
+fn restart_explorer() -> bool {
+    let wait = |secs: u64| {
+        (0..secs * 2).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            explorer_running()
+        })
+    };
+    if wait(5) {
+        return true;
+    }
+    let _ = std::process::Command::new(sys("runas"))
+        .arg("/trustlevel:0x20000")
+        .arg(windir().join("explorer.exe"))
+        .status();
+    wait(10)
 }
 
 fn check_disk() {
