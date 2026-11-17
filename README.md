@@ -31,7 +31,7 @@ Menu-driven repair tool for Windows 7 / 8 / 10 / 11, written in Rust. Single `.e
 
 **Safety.** Before the first system change in a session WinTool offers a System Restore point (default: yes), and the
 network report records the previous DNS / proxy settings. Snappy Driver Installer runs in `select missing` mode only
-(never replaces a working driver); it is downloaded to `%ProgramData%\WinTool\SDIO` on the repaired PC and deleted after a
+(never replaces a working driver); it is downloaded to `%TEMP%\WinTool-SDIO` on the repaired PC and deleted after a
 successful run (kept and reported if something failed). Its driver packs are downloaded via torrent, which some
 corporate firewalls block — WinTool then reports it and moves on (30-minute limit).
 
@@ -39,6 +39,8 @@ corporate firewalls block — WinTool then reports it and moves on (30-minute li
 and a pixel-art banner. Unicode boxes on Windows 8+, ASCII on the Windows 7 console.
 
 **2. No sound — automatic diagnose & repair** (report: `WinTool-sound-report.txt`).
+
+> **Beta:** new in 0.3.0 and not yet tested on real hardware. If it misbehaves, please open an issue and attach the report.
 
 | Step | What it checks and fixes |
 |---|---|
@@ -102,7 +104,7 @@ The Win7 targets (`*-win7-windows-msvc`) are tier 3 in Rust, so they are built w
 
 **Təhlükəsizlik.** Sessiyada ilk sistem dəyişikliyindən əvvəl System Restore point təklif edir (default: bəli), şəbəkə
 hesabatına köhnə DNS / proxy ayarları yazılır. Snappy Driver Installer yalnız `select missing` rejimində işləyir (işləyən
-driveri heç vaxt dəyişmir); təmir olunan kompüterdə `%ProgramData%\WinTool\SDIO`-ya endirilir və uğurlu işdən sonra silinir
+driveri heç vaxt dəyişmir); təmir olunan kompüterdə `%TEMP%\WinTool-SDIO`-ya endirilir və uğurlu işdən sonra silinir
 (alınmasa saxlanır və hesabatda göstərilir). Driver paketləri torrent ilə endirilir — bəzi korporativ firewall-lar bunu bloklayır,
 o zaman WinTool bunu yazıb davam edir (30 dəqiqə limit).
 
@@ -110,6 +112,8 @@ o zaman WinTool bunu yazıb davam edir (30 dəqiqə limit).
 piksel-art banner. Windows 8+ üçün Unicode çərçivələr, Windows 7 konsolunda ASCII.
 
 **2. Səs yoxdur — avtomatik tap və həll et** (hesabat: `WinTool-sound-report.txt`).
+
+> **Beta:** 0.3.0-da yenidir, hələ real kompüterlərdə test edilməyib. Problem olsa, issue açın və hesabatı əlavə edin.
 
 | Addım | Nəyi yoxlayır və düzəldir |
 |---|---|
@@ -155,7 +159,7 @@ Build qaydası yuxarıda, English bölməsindədir.
 
 **Безопасность.** Перед первым изменением системы в сеансе WinTool предлагает создать точку восстановления (по умолчанию: да),
 а в отчёт о сети записываются прежние настройки DNS / прокси. Snappy Driver Installer работает только в режиме `select missing`
-(никогда не заменяет рабочий драйвер); он скачивается в `%ProgramData%\WinTool\SDIO` на ремонтируемом ПК и удаляется после
+(никогда не заменяет рабочий драйвер); он скачивается в `%TEMP%\WinTool-SDIO` на ремонтируемом ПК и удаляется после
 успешной работы (при ошибке сохраняется, путь указан в отчёте). Пакеты драйверов качаются через torrent — некоторые
 корпоративные файрволы это блокируют, тогда WinTool сообщает об этом и продолжает (лимит 30 минут).
 
@@ -163,6 +167,8 @@ Build qaydası yuxarıda, English bölməsindədir.
 операций, пиксель-арт баннер. Рамки Unicode в Windows 8+, ASCII в консоли Windows 7.
 
 **2. Нет звука — автоматическая диагностика и ремонт** (отчёт: `WinTool-sound-report.txt`).
+
+> **Бета:** новое в 0.3.0, ещё не проверено на реальном железе. Если что-то не так, откройте issue и приложите отчёт.
 
 | Шаг | Что проверяет и исправляет |
 |---|---|
