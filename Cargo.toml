@@ -10,6 +10,8 @@ repository = "https://github.com/Really-y/wintool"
 
 [dependencies]
 crossterm = { version = "0.28", default-features = false, features = ["events", "windows"] }
+regex-lite = "0.1.9"
+sha2 = { version = "0.11.1", default-features = false }
 
 [build-dependencies]
 embed-manifest = "1.4"

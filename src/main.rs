@@ -1,6 +1,6 @@
 //! WinTool — menu-driven repair tool for Windows 7 / 8 / 10 / 11.
 //! Sections: FULL CHECK (finds and fixes everything, unattended), automatic network repair,
-//! automatic sound repair, manual network repair, cleanup, system repair.
+//! automatic sound repair, virus scan, manual network repair, cleanup, system repair.
 
 mod art;
 mod audio;
@@ -14,13 +14,15 @@ mod online;
 mod repair;
 mod report;
 mod safety;
+mod scan;
 mod ui;
 mod util;
 
-const ITEMS: [&str; 6] = [
-    "FULL CHECK - find & fix everything (unattended)",
+const ITEMS: [&str; 7] = [
+    "FULL CHECK - find & fix everything",
     "NO INTERNET - auto diagnose & repair",
     "NO SOUND - auto diagnose & repair",
+    "VIRUS SCAN - WinTool + Defender",
     "Manual network repair (DNS, IP, Wi-Fi)",
     "System cleanup (temp, update cache ...)",
     "System repair (SFC, DISM, drivers ...)",
@@ -43,8 +45,9 @@ fn main() {
                 audio::run();
                 util::pause();
             }
-            3 => net::menu(),
-            4 => clean::menu(),
+            3 => scan::menu(),
+            4 => net::menu(),
+            5 => clean::menu(),
             _ => repair::menu(),
         }
     }

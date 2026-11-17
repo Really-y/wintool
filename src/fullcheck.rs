@@ -300,7 +300,7 @@ fn hosts_hijacks(text: &str) -> Vec<usize> {
 }
 
 /// `%VAR%` expansion with the current environment (unknown variables stay as they are).
-fn expand_env(s: &str) -> String {
+pub(crate) fn expand_env(s: &str) -> String {
     let mut out = String::new();
     let mut rest = s;
     while let Some(a) = rest.find('%') {
@@ -327,7 +327,7 @@ fn expand_env(s: &str) -> String {
 
 /// The file a startup command needs: the program, or for rundll32 the DLL.
 /// None when it cannot be told (a bare name found through PATH, odd syntax).
-fn startup_file(cmd: &str) -> Option<String> {
+pub(crate) fn startup_file(cmd: &str) -> Option<String> {
     let c = expand_env(cmd.trim());
     let lower = c.to_lowercase();
     let (exe, rest) = if let Some(q) = c.strip_prefix('"') {
@@ -409,7 +409,7 @@ fn url_hostport(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| if host.contains(':') { host.to_string() } else { format!("{host}:{port}") })
 }
 
-fn reachable(hostport: &str) -> bool {
+pub(crate) fn reachable(hostport: &str) -> bool {
     hostport
         .to_socket_addrs()
         .ok()
@@ -421,13 +421,13 @@ fn reachable(hostport: &str) -> bool {
 // ---------------------------------------------------------------- fix helpers
 
 /// Runs a PowerShell fix; true when it ran without an error.
-fn ps_ok(script: &str) -> bool {
+pub(crate) fn ps_ok(script: &str) -> bool {
     ps(&format!("$ErrorActionPreference = 'Stop'\ntry {{\n{script}\n'OK' }} catch {{ 'ERR|' + $_.Exception.Message }}"))
         .lines()
         .any(|l| l.trim() == "OK")
 }
 
-fn reg_delete(path: &str, name: &str) -> bool {
+pub(crate) fn reg_delete(path: &str, name: &str) -> bool {
     ps_ok(&format!("Remove-ItemProperty -LiteralPath {} -Name {}", ps_quote(path), ps_quote(name)))
 }
 
@@ -446,7 +446,7 @@ fn short_key(path: &str) -> String {
 }
 
 /// A path as this process sees it: a 32-bit WinTool must look into System32 through Sysnative.
-fn native_path(p: &str) -> PathBuf {
+pub(crate) fn native_path(p: &str) -> PathBuf {
     let sys32 = format!("{}\\system32\\", windir().to_string_lossy().to_lowercase());
     if std::env::var_os("PROCESSOR_ARCHITEW6432").is_some() && p.to_lowercase().starts_with(&sys32) {
         return windir().join("Sysnative").join(&p[sys32.len()..]);
@@ -454,7 +454,7 @@ fn native_path(p: &str) -> PathBuf {
     PathBuf::from(p)
 }
 
-fn program_files() -> PathBuf {
+pub(crate) fn program_files() -> PathBuf {
     // ProgramW6432 = the real (64-bit) Program Files, also for a 32-bit WinTool.
     std::env::var_os("ProgramW6432")
         .or_else(|| std::env::var_os("ProgramFiles"))
@@ -523,8 +523,8 @@ pub fn run() {
     r.step("[8/11] Sound");
     audio::quick(&mut r);
 
-    r.step("[9/11] Antivirus (Windows Defender)");
-    defender_stage(&mut r, &facts, &st);
+    r.step("[9/11] Virus scan (WinTool scanner + Windows Defender)");
+    defender_stage(&mut r, &facts, &mut st);
 
     r.step("[10/11] Junk files");
     let freed = clean::auto(&mut r, st.low_space);
@@ -1028,18 +1028,14 @@ fn devices_stage(r: &mut Report, st: &State) {
     }
 }
 
-fn defender_stage(r: &mut Report, f: &Facts, st: &State) {
+fn defender_stage(r: &mut Report, f: &Facts, st: &mut State) {
+    // WinTool's own scanner runs on every PC, also next to another antivirus.
+    st.suspicious += crate::scan::run_into(r, st.internet);
     if let Some(av) = &st.third_party_av {
         r.put(Kind::Info, format!("{av} protects this PC - run a full scan with it from time to time."));
         if st.suspicious > 0 {
-            r.manual(format!("Signs of malware were repaired: run a FULL scan with {av} now."));
+            r.manual(format!("Signs of malware were found: run a FULL scan with {av} now."));
         }
-        return;
-    }
-    let mpcmd = program_files().join(r"Windows Defender\MpCmdRun.exe");
-    if !mpcmd.is_file() {
-        r.put(Kind::Warn, "No antivirus found on this PC.");
-        r.manual("No antivirus is installed: install a free antivirus that supports this Windows version.");
         return;
     }
     if let Some(v) = f.all("DEF").next() {
@@ -1057,7 +1053,18 @@ fn defender_stage(r: &mut Report, f: &Facts, st: &State) {
             r.put(Kind::Warn, format!("Defender virus definitions are {age} days old (no internet to update them)."));
         }
     }
-    if st.internet {
+    defender_scan(r, st.internet);
+}
+
+/// Updates Defender's virus definitions (online) and runs its quick scan.
+pub(crate) fn defender_scan(r: &mut Report, internet: bool) {
+    let mpcmd = program_files().join(r"Windows Defender\MpCmdRun.exe");
+    if !mpcmd.is_file() {
+        r.put(Kind::Warn, "Windows Defender is not available on this PC.");
+        r.manual("No antivirus besides WinTool's scanner: install a free antivirus that supports this Windows version.");
+        return;
+    }
+    if internet {
         let ok = ui::spin("Updating Defender virus definitions", || {
             Command::new(&mpcmd).arg("-SignatureUpdate").output().map(|o| o.status.success()).unwrap_or(false)
         });
@@ -1076,7 +1083,7 @@ fn defender_stage(r: &mut Report, f: &Facts, st: &State) {
             r.put(Kind::Warn, "Defender quick scan FOUND THREATS - Defender removes / quarantines them.");
             r.manual("Defender found malware: Windows Security -> Virus & threat protection -> Protection history, then run a FULL scan.");
         }
-        _ => r.put(Kind::Warn, "Defender quick scan could not run."),
+        _ => r.put(Kind::Warn, "Defender quick scan could not run (another antivirus may have turned Defender off)."),
     }
 }
 
